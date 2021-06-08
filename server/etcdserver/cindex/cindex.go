@@ -155,20 +155,7 @@ func ReadConsistentIndex(tx backend.ReadTx) (uint64, uint64) {
 }
 
 func UnsafeUpdateConsistentIndex(tx backend.BatchTx, index uint64, term uint64, onlyGrow bool) {
-	if index == 0 {
-		// Never save 0 as it means that we didn't loaded the real index yet.
-		return
-	}
 
-	if onlyGrow {
-		oldi, oldTerm := unsafeReadConsistentIndex(tx)
-		if term < oldTerm {
-			return
-		}
-		if term == oldTerm && index <= oldi {
-			return
-		}
-	}
 
 	bs1 := make([]byte, 8)
 	binary.BigEndian.PutUint64(bs1, index)

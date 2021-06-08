@@ -54,3 +54,12 @@ func Cluster(v string) string {
 	}
 	return fmt.Sprintf("%s.%s", vs[0], vs[1])
 }
+
+// Storage only keeps the major.minor.
+func Storage(v string) string {
+	vs := strings.Split(v, ".")
+	if len(vs) <= 2 {
+		return v
+	}
+	return fmt.Sprintf("%s.%s", vs[0], vs[1])
+}

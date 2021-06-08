@@ -40,6 +40,7 @@ import (
 	"go.etcd.io/etcd/server/v3/etcdserver/api/snap"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v2store"
 	"go.etcd.io/etcd/server/v3/etcdserver/cindex"
+	"go.etcd.io/etcd/server/v3/etcdserver/version"
 	"go.etcd.io/etcd/server/v3/mvcc/backend"
 	"go.etcd.io/etcd/server/v3/verify"
 	"go.etcd.io/etcd/server/v3/wal"
@@ -106,6 +107,7 @@ type Status struct {
 	Revision  int64  `json:"revision"`
 	TotalKey  int    `json:"totalKey"`
 	TotalSize int64  `json:"totalSize"`
+	Version   string `json:"version"`
 }
 
 // Status returns the snapshot file information.
@@ -132,6 +134,10 @@ func (s *v3Manager) Status(dbPath string) (ds Status, err error) {
 			return fmt.Errorf("snapshot file integrity check failed. %d errors found.\n"+strings.Join(dbErrStrings, "\n"), len(dbErrStrings))
 		}
 		ds.TotalSize = tx.Size()
+		v := version.ReadStorageVersionFromSnapshot(tx)
+		if v != nil {
+			ds.Version = v.String()
+		}
 		c := tx.Cursor()
 		for next, _ := c.First(); next != nil; next, _ = c.Next() {
 			b := tx.Bucket(next)

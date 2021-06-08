@@ -37,6 +37,7 @@ import (
 	"go.etcd.io/etcd/server/v3/config"
 	"go.uber.org/zap"
 
+	sversion "go.etcd.io/etcd/server/v3/etcdserver/version"
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/membershippb"
 	"go.etcd.io/etcd/api/v3/version"
@@ -305,12 +306,23 @@ type backendHooks struct {
 	// not initialized `confState` is meaningless.
 	confStateDirty bool
 	confStateLock  sync.Mutex
+
+	// Ensure that storage version is updated only once.
+	storageVersionUpdated sync.Once
 }
 
 func (bh *backendHooks) OnPreCommitUnsafe(tx backend.BatchTx) {
 	bh.indexer.UnsafeSave(tx)
 	bh.confStateLock.Lock()
 	defer bh.confStateLock.Unlock()
+	bh.storageVersionUpdated.Do(func() {
+		membership.MustUnsafeSaveConfStateToBackend(bh.lg, tx, &bh.confState)
+		bh.confStateDirty = false
+		err := sversion.UnsafeUpdateStorageVersion(bh.lg, tx)
+		if err != nil {
+			bh.lg.Warn("Failed to update storage version", zap.Error(err))
+		}
+	})
 	if bh.confStateDirty {
 		membership.MustUnsafeSaveConfStateToBackend(bh.lg, tx, &bh.confState)
 		// save bh.confState

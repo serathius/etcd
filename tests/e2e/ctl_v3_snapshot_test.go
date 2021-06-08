@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"go.etcd.io/etcd/api/v3/version"
 	"go.etcd.io/etcd/etcdutl/v3/snapshot"
 	"go.etcd.io/etcd/pkg/v3/expect"
 )
@@ -58,6 +59,9 @@ func snapshotTest(cx ctlCtx) {
 	}
 	if st.TotalKey < 4 {
 		cx.t.Fatalf("expected at least 4, got %d", st.TotalKey)
+	}
+	if st.Version != version.Storage(version.Version) {
+		cx.t.Fatalf("expected %q, got %q", version.Storage(version.Version), st.Version)
 	}
 }
 
