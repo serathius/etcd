@@ -119,7 +119,7 @@ func (s *v2v3Server) Alarms() []*pb.AlarmMember            { return nil }
 func (s *v2v3Server) LeaderChangedNotify() <-chan struct{} { return nil }
 
 func (s *v2v3Server) Do(ctx context.Context, r pb.Request) (etcdserver.Response, error) {
-	applier := etcdserver.NewApplierV2(s.lg, s.store, nil)
+	applier := etcdserver.NewApplierV2(s.lg, s.store, nil, nil)
 	reqHandler := etcdserver.NewStoreRequestV2Handler(s.store, applier)
 	req := (*etcdserver.RequestV2)(&r)
 	resp, err := req.Handle(ctx, reqHandler)

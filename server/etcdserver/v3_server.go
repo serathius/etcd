@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	serverversion "go.etcd.io/etcd/server/v3/etcdserver/version"
 	"strconv"
 	"time"
 
@@ -932,12 +933,12 @@ func (s *EtcdServer) downgradeValidate(ctx context.Context, v string) (*pb.Downg
 	}
 	resp.Version = cv.String()
 
-	allowedTargetVersion := membership.AllowedDowngradeVersion(cv)
+	allowedTargetVersion := serverversion.AllowedDowngradeVersion(cv)
 	if !targetVersion.Equal(*allowedTargetVersion) {
 		return nil, ErrInvalidDowngradeTargetVersion
 	}
 
-	downgradeInfo := s.cluster.DowngradeInfo()
+	downgradeInfo := s.monitor.DowngradeInfo()
 	if downgradeInfo.Enabled {
 		// Todo: return the downgrade status along with the error msg
 		return nil, ErrDowngradeInProcess
@@ -976,7 +977,7 @@ func (s *EtcdServer) downgradeCancel(ctx context.Context) (*pb.DowngradeResponse
 		return nil, err
 	}
 
-	downgradeInfo := s.cluster.DowngradeInfo()
+	downgradeInfo := s.monitor.DowngradeInfo()
 	if !downgradeInfo.Enabled {
 		return nil, ErrNoInflightDowngrade
 	}

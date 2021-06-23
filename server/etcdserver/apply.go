@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	serverversion "go.etcd.io/etcd/server/v3/etcdserver/version"
 	"sort"
 	"strconv"
 	"time"
@@ -925,7 +926,7 @@ func (a *applierV3backend) RoleList(r *pb.AuthRoleListRequest) (*pb.AuthRoleList
 }
 
 func (a *applierV3backend) ClusterVersionSet(r *membershippb.ClusterVersionSetRequest, shouldApplyV3 membership.ShouldApplyV3) {
-	a.s.cluster.SetVersion(semver.Must(semver.NewVersion(r.Ver)), api.UpdateCapability, shouldApplyV3)
+	a.s.monitor.SetVersion(semver.Must(semver.NewVersion(r.Ver)), api.UpdateCapability, shouldApplyV3)
 }
 
 func (a *applierV3backend) ClusterMemberAttrSet(r *membershippb.ClusterMemberAttrSetRequest, shouldApplyV3 membership.ShouldApplyV3) {
@@ -940,11 +941,11 @@ func (a *applierV3backend) ClusterMemberAttrSet(r *membershippb.ClusterMemberAtt
 }
 
 func (a *applierV3backend) DowngradeInfoSet(r *membershippb.DowngradeInfoSetRequest, shouldApplyV3 membership.ShouldApplyV3) {
-	d := membership.DowngradeInfo{Enabled: false}
+	d := serverversion.DowngradeInfo{Enabled: false}
 	if r.Enabled {
-		d = membership.DowngradeInfo{Enabled: true, TargetVersion: r.Ver}
+		d = serverversion.DowngradeInfo{Enabled: true, TargetVersion: r.Ver}
 	}
-	a.s.cluster.SetDowngradeInfo(&d, shouldApplyV3)
+	a.s.monitor.SetDowngradeInfo(&d, shouldApplyV3)
 }
 
 type quotaApplierV3 struct {

@@ -29,7 +29,7 @@ var (
 	ErrTooManyLearners  = errors.New("membership: too many learner members in cluster")
 )
 
-func isKeyNotFound(err error) bool {
+func IsKeyNotFound(err error) bool {
 	e, ok := err.(*v2error.Error)
 	return ok && e.ErrorCode == v2error.EcodeKeyNotFound
 }

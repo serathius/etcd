@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package membership
+package version
 
 import (
 	"github.com/coreos/go-semver/semver"
-	"go.etcd.io/etcd/api/v3/version"
 	"go.uber.org/zap"
+
+	"go.etcd.io/etcd/api/v3/version"
 )
 
 type DowngradeInfo struct {

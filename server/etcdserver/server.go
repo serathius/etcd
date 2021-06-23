@@ -243,6 +243,7 @@ type EtcdServer struct {
 	attributes membership.Attributes
 
 	cluster *membership.RaftCluster
+	monitor *serverversion.Monitor
 
 	v2store     v2store.Store
 	snapshotter *snap.Snapshotter
@@ -337,6 +338,7 @@ func NewServer(cfg config.ServerConfig) (srv *EtcdServer, err error) {
 		s  *raft.MemoryStorage
 		id types.ID
 		cl *membership.RaftCluster
+		m  *serverversion.Monitor
 	)
 
 	if cfg.MaxRequestBytes > recommendedMaxRequestBytes {
@@ -432,6 +434,9 @@ func NewServer(cfg config.ServerConfig) (srv *EtcdServer, err error) {
 		cl.SetBackend(be)
 		id, n, s, w = startNode(cfg, cl, nil)
 		cl.SetID(id, existingCluster.ID())
+		m = serverversion.NewMonitor(cfg.Logger)
+		m.SetStore(st)
+		m.SetBackend(be)
 
 	case !haveWAL && cfg.NewCluster:
 		if err = cfg.VerifyBootstrap(); err != nil {
@@ -441,13 +446,13 @@ func NewServer(cfg config.ServerConfig) (srv *EtcdServer, err error) {
 		if err != nil {
 			return nil, err
 		}
-		m := cl.MemberByName(cfg.Name)
+		member := cl.MemberByName(cfg.Name)
 		if isMemberBootstrapped(cfg.Logger, cl, cfg.Name, prt, cfg.BootstrapTimeoutEffective()) {
-			return nil, fmt.Errorf("member %s has already been bootstrapped", m.ID)
+			return nil, fmt.Errorf("member %s has already been bootstrapped", member.ID)
 		}
 		if cfg.ShouldDiscover() {
 			var str string
-			str, err = v2discovery.JoinCluster(cfg.Logger, cfg.DiscoveryURL, cfg.DiscoveryProxy, m.ID, cfg.InitialPeerURLsMap.String())
+			str, err = v2discovery.JoinCluster(cfg.Logger, cfg.DiscoveryURL, cfg.DiscoveryProxy, member.ID, cfg.InitialPeerURLsMap.String())
 			if err != nil {
 				return nil, &DiscoveryError{Op: "join", Err: err}
 			}
@@ -467,6 +472,9 @@ func NewServer(cfg config.ServerConfig) (srv *EtcdServer, err error) {
 		cl.SetBackend(be)
 		id, n, s, w = startNode(cfg, cl, cl.MemberIDs())
 		cl.SetID(id, cl.ID())
+		m = serverversion.NewMonitor(cfg.Logger)
+		m.SetStore(st)
+		m.SetBackend(be)
 
 	case haveWAL:
 		if err = fileutil.IsDirWriteable(cfg.MemberDir()); err != nil {
@@ -528,15 +536,18 @@ func NewServer(cfg config.ServerConfig) (srv *EtcdServer, err error) {
 		}
 
 		if !cfg.ForceNewCluster {
-			id, cl, n, s, w = restartNode(cfg, snapshot)
+			id, cl, m, n, s, w = restartNode(cfg, snapshot)
 		} else {
-			id, cl, n, s, w = restartAsStandaloneNode(cfg, snapshot)
+			id, cl, m, n, s, w = restartAsStandaloneNode(cfg, snapshot)
 		}
 
 		cl.SetStore(st)
 		cl.SetBackend(be)
 		cl.Recover(api.UpdateCapability)
-		if cl.Version() != nil && !cl.Version().LessThan(semver.Version{Major: 3}) && !beExist {
+		m.SetStore(st)
+		m.SetBackend(be)
+		m.Recover(api.UpdateCapability)
+		if m.Version() != nil && !m.Version().LessThan(semver.Version{Major: 3}) && !beExist {
 			os.RemoveAll(bepath)
 			return nil, fmt.Errorf("database file (%v) of the backend is missing", bepath)
 		}
@@ -583,9 +594,10 @@ func NewServer(cfg config.ServerConfig) (srv *EtcdServer, err error) {
 		consistIndex:       ci,
 		firstCommitInTermC: make(chan struct{}),
 	}
+	m.SetServer(&serverVersionAdapter{srv})
 	serverID.With(prometheus.Labels{"server_id": id.String()}).Set(1)
 
-	srv.applyV2 = NewApplierV2(cfg.Logger, srv.v2store, srv.cluster)
+	srv.applyV2 = NewApplierV2(cfg.Logger, srv.v2store, srv.cluster, srv.monitor)
 
 	srv.be = be
 	srv.beHooks = beHooks
@@ -918,7 +930,7 @@ type ServerPeerV2 interface {
 	DowngradeEnabledHandler() http.Handler
 }
 
-func (s *EtcdServer) DowngradeInfo() *membership.DowngradeInfo { return s.cluster.DowngradeInfo() }
+func (s *EtcdServer) DowngradeInfo() *serverversion.DowngradeInfo { return s.monitor.DowngradeInfo() }
 
 type downgradeEnabledHandler struct {
 	lg      *zap.Logger
@@ -1315,6 +1327,7 @@ func (s *EtcdServer) applySnapshot(ep *etcdProgress, apply *apply) {
 	lg.Info("restoring cluster configuration")
 
 	s.cluster.Recover(api.UpdateCapability)
+	s.monitor.Recover(api.UpdateCapability)
 
 	lg.Info("restored cluster configuration")
 	lg.Info("removing old peers from network")

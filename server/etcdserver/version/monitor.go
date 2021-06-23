@@ -1,31 +1,170 @@
 package version
 
 import (
+	"sync"
+
 	"github.com/coreos/go-semver/semver"
+	"github.com/prometheus/client_golang/prometheus"
+	"go.uber.org/zap"
+
 	"go.etcd.io/etcd/api/v3/version"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/membership"
-	"go.uber.org/zap"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/v2store"
+	"go.etcd.io/etcd/server/v3/mvcc/backend"
 )
 
 // Monitor contains logic used by cluster leader to monitor version changes and decide on cluster version or downgrade progress.
 type Monitor struct {
 	lg *zap.Logger
+
 	s  Server
+	v2store v2store.Store
+	be      backend.Backend
+
+	sync.Mutex // guards the fields below
+	version    *semver.Version
+	downgradeInfo *DowngradeInfo
 }
 
 // Server lists EtcdServer methods needed by Monitor
 type Server interface {
-	GetClusterVersion() *semver.Version
-	GetDowngradeInfo() *membership.DowngradeInfo
 	GetVersions() map[string]*version.Versions
 	UpdateClusterVersion(string)
 	DowngradeCancel()
 }
 
-func NewMonitor(lg *zap.Logger, storage Server) *Monitor {
+func NewMonitor(lg *zap.Logger) *Monitor {
+	if lg == nil {
+		lg = zap.NewNop()
+	}
 	return &Monitor{
 		lg: lg,
-		s:  storage,
+		downgradeInfo: &DowngradeInfo{Enabled: false},
+	}
+}
+
+func (c *Monitor) SetStore(st v2store.Store) { c.v2store = st }
+
+func (c *Monitor) SetBackend(be backend.Backend) {
+	c.be = be
+	mustCreateBackendBuckets(c.be)
+}
+
+func (c *Monitor) SetServer(s Server) {
+	c.s = s
+}
+
+func (m *Monitor) SetVersion(ver *semver.Version, onSet func(*zap.Logger, *semver.Version), shouldApplyV3 membership.ShouldApplyV3) {
+	m.Lock()
+	defer m.Unlock()
+	if m.version != nil {
+		m.lg.Info(
+			"updated cluster version",
+			zap.String("from", version.Cluster(m.version.String())),
+			zap.String("to", version.Cluster(ver.String())),
+		)
+	} else {
+		m.lg.Info(
+			"set initial cluster version",
+			zap.String("cluster-version", version.Cluster(ver.String())),
+		)
+	}
+	oldVer := m.version
+	m.version = ver
+	mustDetectDowngrade(m.lg, m.version, m.downgradeInfo)
+	if m.v2store != nil {
+		mustSaveClusterVersionToStore(m.lg, m.v2store, ver)
+	}
+	if m.be != nil && shouldApplyV3 {
+		mustSaveClusterVersionToBackend(m.be, ver)
+	}
+	if oldVer != nil {
+		ClusterVersionMetrics.With(prometheus.Labels{"cluster_version": version.Cluster(oldVer.String())}).Set(0)
+	}
+	ClusterVersionMetrics.With(prometheus.Labels{"cluster_version": version.Cluster(ver.String())}).Set(1)
+	onSet(m.lg, ver)
+}
+
+func (m *Monitor) Recover(onSet func(*zap.Logger, *semver.Version)) {
+	m.Lock()
+	defer m.Unlock()
+
+	if m.be != nil {
+		m.version = clusterVersionFromBackend(m.lg, m.be)
+	} else {
+		m.version = clusterVersionFromStore(m.lg, m.v2store)
+	}
+
+	if m.be != nil {
+		m.downgradeInfo = downgradeInfoFromBackend(m.lg, m.be)
+	}
+	d := &DowngradeInfo{Enabled: false}
+	if m.downgradeInfo != nil {
+		d = &DowngradeInfo{Enabled: m.downgradeInfo.Enabled, TargetVersion: m.downgradeInfo.TargetVersion}
+	}
+	mustDetectDowngrade(m.lg, m.version, d)
+	onSet(m.lg, m.version)
+
+	if m.version != nil {
+		m.lg.Info(
+			"set cluster version from store",
+			zap.String("cluster-version", version.Cluster(m.version.String())),
+		)
+	}
+}
+
+func (m *Monitor) Version() *semver.Version {
+	m.Lock()
+	defer m.Unlock()
+	if m.version == nil {
+		return nil
+	}
+	return semver.Must(semver.NewVersion(m.version.String()))
+}
+
+// IsValidVersionChange checks the two scenario when version is valid to change:
+// 1. Downgrade: cluster version is 1 minor version higher than local version,
+// cluster version should change.
+// 2. Cluster start: when not all members version are available, cluster version
+// is set to MinVersion(3.0), when all members are at higher version, cluster version
+// is lower than local version, cluster version should change
+func IsValidVersionChange(cv *semver.Version, lv *semver.Version) bool {
+	cv = &semver.Version{Major: cv.Major, Minor: cv.Minor}
+	lv = &semver.Version{Major: lv.Major, Minor: lv.Minor}
+
+	if isValidDowngrade(cv, lv) || (cv.Major == lv.Major && cv.LessThan(*lv)) {
+		return true
+	}
+	return false
+}
+
+// DowngradeInfo returns the downgrade status of the cluster
+func (m *Monitor) DowngradeInfo() *DowngradeInfo {
+	m.Lock()
+	defer m.Unlock()
+	if m.downgradeInfo == nil {
+		return &DowngradeInfo{Enabled: false}
+	}
+	d := &DowngradeInfo{Enabled: m.downgradeInfo.Enabled, TargetVersion: m.downgradeInfo.TargetVersion}
+	return d
+}
+
+func (m *Monitor) SetDowngradeInfo(d *DowngradeInfo, shouldApplyV3 membership.ShouldApplyV3) {
+	m.Lock()
+	defer m.Unlock()
+
+	if m.be != nil && shouldApplyV3 {
+		mustSaveDowngradeToBackend(m.lg, m.be, d)
+	}
+
+	m.downgradeInfo = d
+
+	if d.Enabled {
+		m.lg.Info(
+			"The server is ready to downgrade",
+			zap.String("target-version", d.TargetVersion),
+			zap.String("server-version", version.Version),
+		)
 	}
 }
 
@@ -45,7 +184,7 @@ func (m *Monitor) UpdateClusterVersionIfNeeded() {
 	// if the current version is nil:
 	// 1. use the decided version if possible
 	// 2. or use the min cluster version
-	if m.s.GetClusterVersion() == nil {
+	if m.version == nil {
 		verStr := version.MinClusterVersion
 		if v != nil {
 			verStr = v.String()
@@ -54,13 +193,13 @@ func (m *Monitor) UpdateClusterVersionIfNeeded() {
 		return
 	}
 
-	if v != nil && membership.IsValidVersionChange(m.s.GetClusterVersion(), v) {
+	if v != nil && IsValidVersionChange(m.version, v) {
 		m.s.UpdateClusterVersion(v.String())
 	}
 }
 
 func (m *Monitor) CancelDowngradeIfNeeded() {
-	d := m.s.GetDowngradeInfo()
+	d := m.downgradeInfo
 	if !d.Enabled {
 		return
 	}

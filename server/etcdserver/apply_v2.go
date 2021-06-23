@@ -17,6 +17,7 @@ package etcdserver
 import (
 	"encoding/json"
 	"fmt"
+	serverversion "go.etcd.io/etcd/server/v3/etcdserver/version"
 	"path"
 	"strconv"
 	"time"
@@ -41,17 +42,18 @@ type ApplierV2 interface {
 	Sync(r *RequestV2) Response
 }
 
-func NewApplierV2(lg *zap.Logger, s v2store.Store, c *membership.RaftCluster) ApplierV2 {
+func NewApplierV2(lg *zap.Logger, s v2store.Store, c *membership.RaftCluster, m *serverversion.Monitor) ApplierV2 {
 	if lg == nil {
 		lg = zap.NewNop()
 	}
-	return &applierV2store{lg: lg, store: s, cluster: c}
+	return &applierV2store{lg: lg, store: s, cluster: c, monitor: m}
 }
 
 type applierV2store struct {
 	lg      *zap.Logger
 	store   v2store.Store
 	cluster *membership.RaftCluster
+	monitor *serverversion.Monitor
 }
 
 func (a *applierV2store) Delete(r *RequestV2) Response {
@@ -95,10 +97,10 @@ func (a *applierV2store) Put(r *RequestV2, shouldApplyV3 membership.ShouldApplyV
 			return Response{}
 		}
 		// TODO remove v2 version set to avoid the conflict between v2 and v3 in etcd 3.6
-		if r.Path == membership.StoreClusterVersionKey() {
-			if a.cluster != nil {
+		if r.Path == serverversion.StoreClusterVersionKey() {
+			if a.monitor != nil {
 				// persist to backend given v2store can be very stale
-				a.cluster.SetVersion(semver.Must(semver.NewVersion(r.Val)), api.UpdateCapability, shouldApplyV3)
+				a.monitor.SetVersion(semver.Must(semver.NewVersion(r.Val)), api.UpdateCapability, shouldApplyV3)
 			}
 			return Response{}
 		}

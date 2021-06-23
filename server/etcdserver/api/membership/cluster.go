@@ -21,23 +21,18 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"path"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	"go.etcd.io/etcd/api/v3/version"
+	"github.com/coreos/go-semver/semver"
 	"go.etcd.io/etcd/client/pkg/v3/types"
 	"go.etcd.io/etcd/pkg/v3/netutil"
 	"go.etcd.io/etcd/raft/v3"
 	"go.etcd.io/etcd/raft/v3/raftpb"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v2store"
 	"go.etcd.io/etcd/server/v3/mvcc/backend"
-	"go.etcd.io/etcd/server/v3/mvcc/buckets"
-
-	"github.com/coreos/go-semver/semver"
-	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
 )
 
@@ -54,13 +49,10 @@ type RaftCluster struct {
 	be      backend.Backend
 
 	sync.Mutex // guards the fields below
-	version    *semver.Version
 	members    map[types.ID]*Member
 	// removed contains the ids of removed members in the cluster.
 	// removed id cannot be reused.
 	removed map[types.ID]bool
-
-	downgradeInfo *DowngradeInfo
 }
 
 // ConfigChangeContext represents a context for confChange.
@@ -114,7 +106,6 @@ func NewCluster(lg *zap.Logger) *RaftCluster {
 		lg:            lg,
 		members:       make(map[types.ID]*Member),
 		removed:       make(map[types.ID]bool),
-		downgradeInfo: &DowngradeInfo{Enabled: false},
 	}
 }
 
@@ -255,22 +246,10 @@ func (c *RaftCluster) Recover(onSet func(*zap.Logger, *semver.Version)) {
 	defer c.Unlock()
 
 	if c.be != nil {
-		c.version = clusterVersionFromBackend(c.lg, c.be)
 		c.members, c.removed = membersFromBackend(c.lg, c.be)
 	} else {
-		c.version = clusterVersionFromStore(c.lg, c.v2store)
 		c.members, c.removed = membersFromStore(c.lg, c.v2store)
 	}
-
-	if c.be != nil {
-		c.downgradeInfo = downgradeInfoFromBackend(c.lg, c.be)
-	}
-	d := &DowngradeInfo{Enabled: false}
-	if c.downgradeInfo != nil {
-		d = &DowngradeInfo{Enabled: c.downgradeInfo.Enabled, TargetVersion: c.downgradeInfo.TargetVersion}
-	}
-	mustDetectDowngrade(c.lg, c.version, d)
-	onSet(c.lg, c.version)
 
 	for _, m := range c.members {
 		c.lg.Info(
@@ -279,12 +258,6 @@ func (c *RaftCluster) Recover(onSet func(*zap.Logger, *semver.Version)) {
 			zap.String("local-member-id", c.localID.String()),
 			zap.String("recovered-remote-peer-id", m.ID.String()),
 			zap.Strings("recovered-remote-peer-urls", m.PeerURLs),
-		)
-	}
-	if c.version != nil {
-		c.lg.Info(
-			"set cluster version from store",
-			zap.String("cluster-version", version.Cluster(c.version.String())),
 		)
 	}
 }
@@ -507,50 +480,6 @@ func (c *RaftCluster) UpdateRaftAttributes(id types.ID, raftAttr RaftAttributes,
 	)
 }
 
-func (c *RaftCluster) Version() *semver.Version {
-	c.Lock()
-	defer c.Unlock()
-	if c.version == nil {
-		return nil
-	}
-	return semver.Must(semver.NewVersion(c.version.String()))
-}
-
-func (c *RaftCluster) SetVersion(ver *semver.Version, onSet func(*zap.Logger, *semver.Version), shouldApplyV3 ShouldApplyV3) {
-	c.Lock()
-	defer c.Unlock()
-	if c.version != nil {
-		c.lg.Info(
-			"updated cluster version",
-			zap.String("cluster-id", c.cid.String()),
-			zap.String("local-member-id", c.localID.String()),
-			zap.String("from", version.Cluster(c.version.String())),
-			zap.String("to", version.Cluster(ver.String())),
-		)
-	} else {
-		c.lg.Info(
-			"set initial cluster version",
-			zap.String("cluster-id", c.cid.String()),
-			zap.String("local-member-id", c.localID.String()),
-			zap.String("cluster-version", version.Cluster(ver.String())),
-		)
-	}
-	oldVer := c.version
-	c.version = ver
-	mustDetectDowngrade(c.lg, c.version, c.downgradeInfo)
-	if c.v2store != nil {
-		mustSaveClusterVersionToStore(c.lg, c.v2store, ver)
-	}
-	if c.be != nil && shouldApplyV3 {
-		mustSaveClusterVersionToBackend(c.be, ver)
-	}
-	if oldVer != nil {
-		ClusterVersionMetrics.With(prometheus.Labels{"cluster_version": version.Cluster(oldVer.String())}).Set(0)
-	}
-	ClusterVersionMetrics.With(prometheus.Labels{"cluster_version": version.Cluster(ver.String())}).Set(1)
-	onSet(c.lg, ver)
-}
-
 func (c *RaftCluster) IsReadyToAddVotingMember() bool {
 	nmembers := 1
 	nstarted := 0
@@ -645,7 +574,7 @@ func membersFromStore(lg *zap.Logger, st v2store.Store) (map[types.ID]*Member, m
 	removed := make(map[types.ID]bool)
 	e, err := st.Get(StoreMembersPrefix, true, true)
 	if err != nil {
-		if isKeyNotFound(err) {
+		if IsKeyNotFound(err) {
 			return members, removed
 		}
 		lg.Panic("failed to get members from store", zap.String("path", StoreMembersPrefix), zap.Error(err))
@@ -661,7 +590,7 @@ func membersFromStore(lg *zap.Logger, st v2store.Store) (map[types.ID]*Member, m
 
 	e, err = st.Get(storeRemovedMembersPrefix, true, true)
 	if err != nil {
-		if isKeyNotFound(err) {
+		if IsKeyNotFound(err) {
 			return members, removed
 		}
 		lg.Panic(
@@ -678,74 +607,6 @@ func membersFromStore(lg *zap.Logger, st v2store.Store) (map[types.ID]*Member, m
 
 func membersFromBackend(lg *zap.Logger, be backend.Backend) (map[types.ID]*Member, map[types.ID]bool) {
 	return mustReadMembersFromBackend(lg, be)
-}
-
-func clusterVersionFromStore(lg *zap.Logger, st v2store.Store) *semver.Version {
-	e, err := st.Get(path.Join(storePrefix, "version"), false, false)
-	if err != nil {
-		if isKeyNotFound(err) {
-			return nil
-		}
-		lg.Panic(
-			"failed to get cluster version from store",
-			zap.String("path", path.Join(storePrefix, "version")),
-			zap.Error(err),
-		)
-	}
-	return semver.Must(semver.NewVersion(*e.Node.Value))
-}
-
-// The field is populated since etcd v3.5.
-func clusterVersionFromBackend(lg *zap.Logger, be backend.Backend) *semver.Version {
-	ckey := backendClusterVersionKey()
-	tx := be.ReadTx()
-	tx.RLock()
-	defer tx.RUnlock()
-	keys, vals := tx.UnsafeRange(buckets.Cluster, ckey, nil, 0)
-	if len(keys) == 0 {
-		return nil
-	}
-	if len(keys) != 1 {
-		lg.Panic(
-			"unexpected number of keys when getting cluster version from backend",
-			zap.Int("number-of-key", len(keys)),
-		)
-	}
-	return semver.Must(semver.NewVersion(string(vals[0])))
-}
-
-// The field is populated since etcd v3.5.
-func downgradeInfoFromBackend(lg *zap.Logger, be backend.Backend) *DowngradeInfo {
-	dkey := backendDowngradeKey()
-	tx := be.ReadTx()
-	tx.Lock()
-	defer tx.Unlock()
-	keys, vals := tx.UnsafeRange(buckets.Cluster, dkey, nil, 0)
-	if len(keys) == 0 {
-		return nil
-	}
-
-	if len(keys) != 1 {
-		lg.Panic(
-			"unexpected number of keys when getting cluster version from backend",
-			zap.Int("number-of-key", len(keys)),
-		)
-	}
-	var d DowngradeInfo
-	if err := json.Unmarshal(vals[0], &d); err != nil {
-		lg.Panic("failed to unmarshal downgrade information", zap.Error(err))
-	}
-
-	// verify the downgrade info from backend
-	if d.Enabled {
-		if _, err := semver.NewVersion(d.TargetVersion); err != nil {
-			lg.Panic(
-				"unexpected version format of the downgrade target version from backend",
-				zap.String("target-version", d.TargetVersion),
-			)
-		}
-	}
-	return &d
 }
 
 // ValidateClusterAndAssignIDs validates the local cluster by matching the PeerURLs
@@ -781,21 +642,6 @@ func ValidateClusterAndAssignIDs(lg *zap.Logger, local *RaftCluster, existing *R
 	return nil
 }
 
-// IsValidVersionChange checks the two scenario when version is valid to change:
-// 1. Downgrade: cluster version is 1 minor version higher than local version,
-// cluster version should change.
-// 2. Cluster start: when not all members version are available, cluster version
-// is set to MinVersion(3.0), when all members are at higher version, cluster version
-// is lower than local version, cluster version should change
-func IsValidVersionChange(cv *semver.Version, lv *semver.Version) bool {
-	cv = &semver.Version{Major: cv.Major, Minor: cv.Minor}
-	lv = &semver.Version{Major: lv.Major, Minor: lv.Minor}
-
-	if isValidDowngrade(cv, lv) || (cv.Major == lv.Major && cv.LessThan(*lv)) {
-		return true
-	}
-	return false
-}
 
 // IsLocalMemberLearner returns if the local member is raft learner
 func (c *RaftCluster) IsLocalMemberLearner() bool {
@@ -810,36 +656,6 @@ func (c *RaftCluster) IsLocalMemberLearner() bool {
 		)
 	}
 	return localMember.IsLearner
-}
-
-// DowngradeInfo returns the downgrade status of the cluster
-func (c *RaftCluster) DowngradeInfo() *DowngradeInfo {
-	c.Lock()
-	defer c.Unlock()
-	if c.downgradeInfo == nil {
-		return &DowngradeInfo{Enabled: false}
-	}
-	d := &DowngradeInfo{Enabled: c.downgradeInfo.Enabled, TargetVersion: c.downgradeInfo.TargetVersion}
-	return d
-}
-
-func (c *RaftCluster) SetDowngradeInfo(d *DowngradeInfo, shouldApplyV3 ShouldApplyV3) {
-	c.Lock()
-	defer c.Unlock()
-
-	if c.be != nil && shouldApplyV3 {
-		mustSaveDowngradeToBackend(c.lg, c.be, d)
-	}
-
-	c.downgradeInfo = d
-
-	if d.Enabled {
-		c.lg.Info(
-			"The server is ready to downgrade",
-			zap.String("target-version", d.TargetVersion),
-			zap.String("server-version", version.Version),
-		)
-	}
 }
 
 // IsMemberExist returns if the member with the given id exists in cluster.

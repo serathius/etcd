@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"expvar"
 	"fmt"
+	serverversion "go.etcd.io/etcd/server/v3/etcdserver/version"
 	"log"
 	"sort"
 	"sync"
@@ -473,7 +474,7 @@ func startNode(cfg config.ServerConfig, cl *membership.RaftCluster, ids []types.
 	return id, n, s, w
 }
 
-func restartNode(cfg config.ServerConfig, snapshot *raftpb.Snapshot) (types.ID, *membership.RaftCluster, raft.Node, *raft.MemoryStorage, *wal.WAL) {
+func restartNode(cfg config.ServerConfig, snapshot *raftpb.Snapshot) (types.ID, *membership.RaftCluster, *serverversion.Monitor, raft.Node, *raft.MemoryStorage, *wal.WAL) {
 	var walsnap walpb.Snapshot
 	if snapshot != nil {
 		walsnap.Index, walsnap.Term = snapshot.Metadata.Index, snapshot.Metadata.Term
@@ -488,6 +489,7 @@ func restartNode(cfg config.ServerConfig, snapshot *raftpb.Snapshot) (types.ID, 
 	)
 	cl := membership.NewCluster(cfg.Logger)
 	cl.SetID(id, cid)
+	m := serverversion.NewMonitor(cfg.Logger, nil)
 	s := raft.NewMemoryStorage()
 	if snapshot != nil {
 		s.ApplySnapshot(*snapshot)
@@ -510,10 +512,10 @@ func restartNode(cfg config.ServerConfig, snapshot *raftpb.Snapshot) (types.ID, 
 	raftStatusMu.Lock()
 	raftStatus = n.Status
 	raftStatusMu.Unlock()
-	return id, cl, n, s, w
+	return id, cl, m, n, s, w
 }
 
-func restartAsStandaloneNode(cfg config.ServerConfig, snapshot *raftpb.Snapshot) (types.ID, *membership.RaftCluster, raft.Node, *raft.MemoryStorage, *wal.WAL) {
+func restartAsStandaloneNode(cfg config.ServerConfig, snapshot *raftpb.Snapshot) (types.ID, *membership.RaftCluster, *serverversion.Monitor, raft.Node, *raft.MemoryStorage, *wal.WAL) {
 	var walsnap walpb.Snapshot
 	if snapshot != nil {
 		walsnap.Index, walsnap.Term = snapshot.Metadata.Index, snapshot.Metadata.Term
@@ -562,6 +564,7 @@ func restartAsStandaloneNode(cfg config.ServerConfig, snapshot *raftpb.Snapshot)
 
 	cl := membership.NewCluster(cfg.Logger)
 	cl.SetID(id, cid)
+	m := serverversion.NewMonitor(cfg.Logger, nil)
 	s := raft.NewMemoryStorage()
 	if snapshot != nil {
 		s.ApplySnapshot(*snapshot)
@@ -582,7 +585,7 @@ func restartAsStandaloneNode(cfg config.ServerConfig, snapshot *raftpb.Snapshot)
 
 	n := raft.RestartNode(c)
 	raftStatus = n.Status
-	return id, cl, n, s, w
+	return id, cl, m, n, s, w
 }
 
 // getIDs returns an ordered set of IDs included in the given snapshot and
