@@ -164,7 +164,7 @@ func (ki *keyIndex) since(lg *zap.Logger, rev int64) []revision {
 			zap.String("key", string(ki.key)),
 		)
 	}
-	since := revision{rev, 0}
+	since := revision{main: rev}
 	var gi int
 	// find the generations to start checking
 	for gi = len(ki.generations) - 1; gi > 0; gi-- {
@@ -357,7 +357,7 @@ func (g *generation) walk(f func(rev revision) bool) int {
 }
 
 func (g *generation) String() string {
-	return fmt.Sprintf("g: created[%d] ver[%d], revs %#v\n", g.created, g.ver, g.revs)
+	return fmt.Sprintf("g: created[%v] ver[%d], revs %#v\n", g.created, g.ver, g.revs)
 }
 
 func (g generation) equal(b generation) bool {

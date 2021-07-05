@@ -44,24 +44,24 @@ func TestKeyIndexGet(t *testing.T) {
 		{16, revision{}, revision{}, 0, ErrRevisionNotFound},
 
 		// get on generation 3
-		{15, revision{14, 1}, revision{14, 0}, 2, nil},
-		{14, revision{14, 1}, revision{14, 0}, 2, nil},
+		{15, revision{main: 14, sub: 1}, revision{main: 14}, 2, nil},
+		{14, revision{main: 14, sub: 1}, revision{main: 14}, 2, nil},
 
 		{13, revision{}, revision{}, 0, ErrRevisionNotFound},
 		{12, revision{}, revision{}, 0, ErrRevisionNotFound},
 
 		// get on generation 2
-		{11, revision{10, 0}, revision{8, 0}, 2, nil},
-		{10, revision{10, 0}, revision{8, 0}, 2, nil},
-		{9, revision{8, 0}, revision{8, 0}, 1, nil},
-		{8, revision{8, 0}, revision{8, 0}, 1, nil},
+		{11, revision{main: 10}, revision{main: 8}, 2, nil},
+		{10, revision{main: 10}, revision{main: 8}, 2, nil},
+		{9, revision{main: 8}, revision{main: 8}, 1, nil},
+		{8, revision{main: 8}, revision{main: 8}, 1, nil},
 
 		{7, revision{}, revision{}, 0, ErrRevisionNotFound},
 		{6, revision{}, revision{}, 0, ErrRevisionNotFound},
 
 		// get on generation 1
-		{5, revision{4, 0}, revision{2, 0}, 2, nil},
-		{4, revision{4, 0}, revision{2, 0}, 2, nil},
+		{5, revision{main: 4}, revision{main: 2}, 2, nil},
+		{4, revision{main: 4}, revision{main: 2}, 2, nil},
 
 		{3, revision{}, revision{}, 0, ErrRevisionNotFound},
 		{2, revision{}, revision{}, 0, ErrRevisionNotFound},
@@ -90,7 +90,7 @@ func TestKeyIndexSince(t *testing.T) {
 	ki := newTestKeyIndex()
 	ki.compact(zap.NewExample(), 4, make(map[revision]struct{}))
 
-	allRevs := []revision{{4, 0}, {6, 0}, {8, 0}, {10, 0}, {12, 0}, {14, 1}, {16, 0}}
+	allRevs := []revision{{main: 4}, {main: 6}, {main: 8}, {main: 10}, {main: 12}, {main: 14, sub: 1}, {main: 16}}
 	tests := []struct {
 		rev int64
 
@@ -130,8 +130,8 @@ func TestKeyIndexPut(t *testing.T) {
 
 	wki := &keyIndex{
 		key:         []byte("foo"),
-		modified:    revision{5, 0},
-		generations: []generation{{created: revision{5, 0}, ver: 1, revs: []revision{{main: 5}}}},
+		modified:    revision{main: 5},
+		generations: []generation{{created: revision{main: 5}, ver: 1, revs: []revision{{main: 5}}}},
 	}
 	if !reflect.DeepEqual(ki, wki) {
 		t.Errorf("ki = %+v, want %+v", ki, wki)
@@ -141,8 +141,8 @@ func TestKeyIndexPut(t *testing.T) {
 
 	wki = &keyIndex{
 		key:         []byte("foo"),
-		modified:    revision{7, 0},
-		generations: []generation{{created: revision{5, 0}, ver: 2, revs: []revision{{main: 5}, {main: 7}}}},
+		modified:    revision{main: 7},
+		generations: []generation{{created: revision{main: 5}, ver: 2, revs: []revision{{main: 5}, {main: 7}}}},
 	}
 	if !reflect.DeepEqual(ki, wki) {
 		t.Errorf("ki = %+v, want %+v", ki, wki)
@@ -151,12 +151,12 @@ func TestKeyIndexPut(t *testing.T) {
 
 func TestKeyIndexRestore(t *testing.T) {
 	ki := &keyIndex{key: []byte("foo")}
-	ki.restore(zap.NewExample(), revision{5, 0}, revision{7, 0}, 2)
+	ki.restore(zap.NewExample(), revision{main: 5}, revision{main: 7}, 2)
 
 	wki := &keyIndex{
 		key:         []byte("foo"),
-		modified:    revision{7, 0},
-		generations: []generation{{created: revision{5, 0}, ver: 2, revs: []revision{{main: 7}}}},
+		modified:    revision{main: 7},
+		generations: []generation{{created: revision{main: 5}, ver: 2, revs: []revision{{main: 7}}}},
 	}
 	if !reflect.DeepEqual(ki, wki) {
 		t.Errorf("ki = %+v, want %+v", ki, wki)
@@ -174,8 +174,8 @@ func TestKeyIndexTombstone(t *testing.T) {
 
 	wki := &keyIndex{
 		key:         []byte("foo"),
-		modified:    revision{7, 0},
-		generations: []generation{{created: revision{5, 0}, ver: 2, revs: []revision{{main: 5}, {main: 7}}}, {}},
+		modified:    revision{main: 7},
+		generations: []generation{{created: revision{main: 5}, ver: 2, revs: []revision{{main: 5}, {main: 7}}}, {}},
 	}
 	if !reflect.DeepEqual(ki, wki) {
 		t.Errorf("ki = %+v, want %+v", ki, wki)
@@ -190,10 +190,10 @@ func TestKeyIndexTombstone(t *testing.T) {
 
 	wki = &keyIndex{
 		key:      []byte("foo"),
-		modified: revision{15, 0},
+		modified: revision{main: 15},
 		generations: []generation{
-			{created: revision{5, 0}, ver: 2, revs: []revision{{main: 5}, {main: 7}}},
-			{created: revision{8, 0}, ver: 3, revs: []revision{{main: 8}, {main: 9}, {main: 15}}},
+			{created: revision{main: 5}, ver: 2, revs: []revision{{main: 5}, {main: 7}}},
+			{created: revision{main: 8}, ver: 3, revs: []revision{{main: 8}, {main: 9}, {main: 15}}},
 			{},
 		},
 	}
@@ -218,11 +218,11 @@ func TestKeyIndexCompactAndKeep(t *testing.T) {
 			1,
 			&keyIndex{
 				key:      []byte("foo"),
-				modified: revision{16, 0},
+				modified: revision{main: 16},
 				generations: []generation{
-					{created: revision{2, 0}, ver: 3, revs: []revision{{main: 2}, {main: 4}, {main: 6}}},
-					{created: revision{8, 0}, ver: 3, revs: []revision{{main: 8}, {main: 10}, {main: 12}}},
-					{created: revision{14, 0}, ver: 3, revs: []revision{{main: 14}, {main: 14, sub: 1}, {main: 16}}},
+					{created: revision{main: 2}, ver: 3, revs: []revision{{main: 2}, {main: 4}, {main: 6}}},
+					{created: revision{main: 8}, ver: 3, revs: []revision{{main: 8}, {main: 10}, {main: 12}}},
+					{created: revision{main: 14}, ver: 3, revs: []revision{{main: 14}, {main: 14, sub: 1}, {main: 16}}},
 					{},
 				},
 			},
@@ -232,11 +232,11 @@ func TestKeyIndexCompactAndKeep(t *testing.T) {
 			2,
 			&keyIndex{
 				key:      []byte("foo"),
-				modified: revision{16, 0},
+				modified: revision{main: 16},
 				generations: []generation{
-					{created: revision{2, 0}, ver: 3, revs: []revision{{main: 2}, {main: 4}, {main: 6}}},
-					{created: revision{8, 0}, ver: 3, revs: []revision{{main: 8}, {main: 10}, {main: 12}}},
-					{created: revision{14, 0}, ver: 3, revs: []revision{{main: 14}, {main: 14, sub: 1}, {main: 16}}},
+					{created: revision{main: 2}, ver: 3, revs: []revision{{main: 2}, {main: 4}, {main: 6}}},
+					{created: revision{main: 8}, ver: 3, revs: []revision{{main: 8}, {main: 10}, {main: 12}}},
+					{created: revision{main: 14}, ver: 3, revs: []revision{{main: 14}, {main: 14, sub: 1}, {main: 16}}},
 					{},
 				},
 			},
@@ -248,11 +248,11 @@ func TestKeyIndexCompactAndKeep(t *testing.T) {
 			3,
 			&keyIndex{
 				key:      []byte("foo"),
-				modified: revision{16, 0},
+				modified: revision{main: 16},
 				generations: []generation{
-					{created: revision{2, 0}, ver: 3, revs: []revision{{main: 2}, {main: 4}, {main: 6}}},
-					{created: revision{8, 0}, ver: 3, revs: []revision{{main: 8}, {main: 10}, {main: 12}}},
-					{created: revision{14, 0}, ver: 3, revs: []revision{{main: 14}, {main: 14, sub: 1}, {main: 16}}},
+					{created: revision{main: 2}, ver: 3, revs: []revision{{main: 2}, {main: 4}, {main: 6}}},
+					{created: revision{main: 8}, ver: 3, revs: []revision{{main: 8}, {main: 10}, {main: 12}}},
+					{created: revision{main: 14}, ver: 3, revs: []revision{{main: 14}, {main: 14, sub: 1}, {main: 16}}},
 					{},
 				},
 			},
@@ -264,11 +264,11 @@ func TestKeyIndexCompactAndKeep(t *testing.T) {
 			4,
 			&keyIndex{
 				key:      []byte("foo"),
-				modified: revision{16, 0},
+				modified: revision{main: 16},
 				generations: []generation{
-					{created: revision{2, 0}, ver: 3, revs: []revision{{main: 4}, {main: 6}}},
-					{created: revision{8, 0}, ver: 3, revs: []revision{{main: 8}, {main: 10}, {main: 12}}},
-					{created: revision{14, 0}, ver: 3, revs: []revision{{main: 14}, {main: 14, sub: 1}, {main: 16}}},
+					{created: revision{main: 2}, ver: 3, revs: []revision{{main: 4}, {main: 6}}},
+					{created: revision{main: 8}, ver: 3, revs: []revision{{main: 8}, {main: 10}, {main: 12}}},
+					{created: revision{main: 14}, ver: 3, revs: []revision{{main: 14}, {main: 14, sub: 1}, {main: 16}}},
 					{},
 				},
 			},
@@ -280,11 +280,11 @@ func TestKeyIndexCompactAndKeep(t *testing.T) {
 			5,
 			&keyIndex{
 				key:      []byte("foo"),
-				modified: revision{16, 0},
+				modified: revision{main: 16},
 				generations: []generation{
-					{created: revision{2, 0}, ver: 3, revs: []revision{{main: 4}, {main: 6}}},
-					{created: revision{8, 0}, ver: 3, revs: []revision{{main: 8}, {main: 10}, {main: 12}}},
-					{created: revision{14, 0}, ver: 3, revs: []revision{{main: 14}, {main: 14, sub: 1}, {main: 16}}},
+					{created: revision{main: 2}, ver: 3, revs: []revision{{main: 4}, {main: 6}}},
+					{created: revision{main: 8}, ver: 3, revs: []revision{{main: 8}, {main: 10}, {main: 12}}},
+					{created: revision{main: 14}, ver: 3, revs: []revision{{main: 14}, {main: 14, sub: 1}, {main: 16}}},
 					{},
 				},
 			},
@@ -296,10 +296,10 @@ func TestKeyIndexCompactAndKeep(t *testing.T) {
 			6,
 			&keyIndex{
 				key:      []byte("foo"),
-				modified: revision{16, 0},
+				modified: revision{main: 16},
 				generations: []generation{
-					{created: revision{8, 0}, ver: 3, revs: []revision{{main: 8}, {main: 10}, {main: 12}}},
-					{created: revision{14, 0}, ver: 3, revs: []revision{{main: 14}, {main: 14, sub: 1}, {main: 16}}},
+					{created: revision{main: 8}, ver: 3, revs: []revision{{main: 8}, {main: 10}, {main: 12}}},
+					{created: revision{main: 14}, ver: 3, revs: []revision{{main: 14}, {main: 14, sub: 1}, {main: 16}}},
 					{},
 				},
 			},
@@ -309,10 +309,10 @@ func TestKeyIndexCompactAndKeep(t *testing.T) {
 			7,
 			&keyIndex{
 				key:      []byte("foo"),
-				modified: revision{16, 0},
+				modified: revision{main: 16},
 				generations: []generation{
-					{created: revision{8, 0}, ver: 3, revs: []revision{{main: 8}, {main: 10}, {main: 12}}},
-					{created: revision{14, 0}, ver: 3, revs: []revision{{main: 14}, {main: 14, sub: 1}, {main: 16}}},
+					{created: revision{main: 8}, ver: 3, revs: []revision{{main: 8}, {main: 10}, {main: 12}}},
+					{created: revision{main: 14}, ver: 3, revs: []revision{{main: 14}, {main: 14, sub: 1}, {main: 16}}},
 					{},
 				},
 			},
@@ -322,10 +322,10 @@ func TestKeyIndexCompactAndKeep(t *testing.T) {
 			8,
 			&keyIndex{
 				key:      []byte("foo"),
-				modified: revision{16, 0},
+				modified: revision{main: 16},
 				generations: []generation{
-					{created: revision{8, 0}, ver: 3, revs: []revision{{main: 8}, {main: 10}, {main: 12}}},
-					{created: revision{14, 0}, ver: 3, revs: []revision{{main: 14}, {main: 14, sub: 1}, {main: 16}}},
+					{created: revision{main: 8}, ver: 3, revs: []revision{{main: 8}, {main: 10}, {main: 12}}},
+					{created: revision{main: 14}, ver: 3, revs: []revision{{main: 14}, {main: 14, sub: 1}, {main: 16}}},
 					{},
 				},
 			},
@@ -337,10 +337,10 @@ func TestKeyIndexCompactAndKeep(t *testing.T) {
 			9,
 			&keyIndex{
 				key:      []byte("foo"),
-				modified: revision{16, 0},
+				modified: revision{main: 16},
 				generations: []generation{
-					{created: revision{8, 0}, ver: 3, revs: []revision{{main: 8}, {main: 10}, {main: 12}}},
-					{created: revision{14, 0}, ver: 3, revs: []revision{{main: 14}, {main: 14, sub: 1}, {main: 16}}},
+					{created: revision{main: 8}, ver: 3, revs: []revision{{main: 8}, {main: 10}, {main: 12}}},
+					{created: revision{main: 14}, ver: 3, revs: []revision{{main: 14}, {main: 14, sub: 1}, {main: 16}}},
 					{},
 				},
 			},
@@ -352,10 +352,10 @@ func TestKeyIndexCompactAndKeep(t *testing.T) {
 			10,
 			&keyIndex{
 				key:      []byte("foo"),
-				modified: revision{16, 0},
+				modified: revision{main: 16},
 				generations: []generation{
-					{created: revision{8, 0}, ver: 3, revs: []revision{{main: 10}, {main: 12}}},
-					{created: revision{14, 0}, ver: 3, revs: []revision{{main: 14}, {main: 14, sub: 1}, {main: 16}}},
+					{created: revision{main: 8}, ver: 3, revs: []revision{{main: 10}, {main: 12}}},
+					{created: revision{main: 14}, ver: 3, revs: []revision{{main: 14}, {main: 14, sub: 1}, {main: 16}}},
 					{},
 				},
 			},
@@ -367,10 +367,10 @@ func TestKeyIndexCompactAndKeep(t *testing.T) {
 			11,
 			&keyIndex{
 				key:      []byte("foo"),
-				modified: revision{16, 0},
+				modified: revision{main: 16},
 				generations: []generation{
-					{created: revision{8, 0}, ver: 3, revs: []revision{{main: 10}, {main: 12}}},
-					{created: revision{14, 0}, ver: 3, revs: []revision{{main: 14}, {main: 14, sub: 1}, {main: 16}}},
+					{created: revision{main: 8}, ver: 3, revs: []revision{{main: 10}, {main: 12}}},
+					{created: revision{main: 14}, ver: 3, revs: []revision{{main: 14}, {main: 14, sub: 1}, {main: 16}}},
 					{},
 				},
 			},
@@ -382,9 +382,9 @@ func TestKeyIndexCompactAndKeep(t *testing.T) {
 			12,
 			&keyIndex{
 				key:      []byte("foo"),
-				modified: revision{16, 0},
+				modified: revision{main: 16},
 				generations: []generation{
-					{created: revision{14, 0}, ver: 3, revs: []revision{{main: 14}, {main: 14, sub: 1}, {main: 16}}},
+					{created: revision{main: 14}, ver: 3, revs: []revision{{main: 14}, {main: 14, sub: 1}, {main: 16}}},
 					{},
 				},
 			},
@@ -394,9 +394,9 @@ func TestKeyIndexCompactAndKeep(t *testing.T) {
 			13,
 			&keyIndex{
 				key:      []byte("foo"),
-				modified: revision{16, 0},
+				modified: revision{main: 16},
 				generations: []generation{
-					{created: revision{14, 0}, ver: 3, revs: []revision{{main: 14}, {main: 14, sub: 1}, {main: 16}}},
+					{created: revision{main: 14}, ver: 3, revs: []revision{{main: 14}, {main: 14, sub: 1}, {main: 16}}},
 					{},
 				},
 			},
@@ -406,9 +406,9 @@ func TestKeyIndexCompactAndKeep(t *testing.T) {
 			14,
 			&keyIndex{
 				key:      []byte("foo"),
-				modified: revision{16, 0},
+				modified: revision{main: 16},
 				generations: []generation{
-					{created: revision{14, 0}, ver: 3, revs: []revision{{main: 14, sub: 1}, {main: 16}}},
+					{created: revision{main: 14}, ver: 3, revs: []revision{{main: 14, sub: 1}, {main: 16}}},
 					{},
 				},
 			},
@@ -420,9 +420,9 @@ func TestKeyIndexCompactAndKeep(t *testing.T) {
 			15,
 			&keyIndex{
 				key:      []byte("foo"),
-				modified: revision{16, 0},
+				modified: revision{main: 16},
 				generations: []generation{
-					{created: revision{14, 0}, ver: 3, revs: []revision{{main: 14, sub: 1}, {main: 16}}},
+					{created: revision{main: 14}, ver: 3, revs: []revision{{main: 14, sub: 1}, {main: 16}}},
 					{},
 				},
 			},
@@ -434,7 +434,7 @@ func TestKeyIndexCompactAndKeep(t *testing.T) {
 			16,
 			&keyIndex{
 				key:      []byte("foo"),
-				modified: revision{16, 0},
+				modified: revision{main: 16},
 				generations: []generation{
 					{},
 				},
@@ -539,9 +539,9 @@ func TestKeyIndexCompactOnFurtherRev(t *testing.T) {
 
 	wki := &keyIndex{
 		key:      []byte("foo"),
-		modified: revision{2, 0},
+		modified: revision{main: 2},
 		generations: []generation{
-			{created: revision{1, 0}, ver: 2, revs: []revision{{main: 2}}},
+			{created: revision{main: 1}, ver: 2, revs: []revision{{main: 2}}},
 		},
 	}
 	wam := map[revision]struct{}{
@@ -570,9 +570,9 @@ func TestKeyIndexIsEmpty(t *testing.T) {
 		{
 			&keyIndex{
 				key:      []byte("foo"),
-				modified: revision{2, 0},
+				modified: revision{main: 2},
 				generations: []generation{
-					{created: revision{1, 0}, ver: 2, revs: []revision{{main: 2}}},
+					{created: revision{main: 1}, ver: 2, revs: []revision{{main: 2}}},
 				},
 			},
 			false,
@@ -655,7 +655,7 @@ func TestGenerationIsEmpty(t *testing.T) {
 func TestGenerationWalk(t *testing.T) {
 	g := &generation{
 		ver:     3,
-		created: revision{2, 0},
+		created: revision{main: 2},
 		revs:    []revision{{main: 2}, {main: 4}, {main: 6}},
 	}
 	tests := []struct {

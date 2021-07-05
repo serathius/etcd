@@ -212,8 +212,8 @@ func TestIndexCompactAndKeep(t *testing.T) {
 		{[]byte("foo1"), true, revision{main: 7}, revision{}, 0},
 		{[]byte("foo2"), true, revision{main: 8}, revision{}, 0},
 		{[]byte("foo"), true, revision{main: 9}, revision{}, 0},
-		{[]byte("foo"), false, revision{10, 0}, revision{10, 0}, 1},
-		{[]byte("foo1"), false, revision{10, 1}, revision{10, 1}, 1},
+		{[]byte("foo"), false, revision{main: 10}, revision{main: 10}, 1},
+		{[]byte("foo1"), false, revision{main: 10, sub: 1}, revision{main: 10, sub: 1}, 1},
 	}
 
 	// Continuous Compact and Keep

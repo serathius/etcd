@@ -38,15 +38,6 @@ var (
 	ErrFutureRev = errors.New("mvcc: required revision is a future revision")
 )
 
-const (
-	// markedRevBytesLen is the byte length of marked revision.
-	// The first `revBytesLen` bytes represents a normal revision. The last
-	// one byte is the mark.
-	markedRevBytesLen      = revBytesLen + 1
-	markBytePosition       = markedRevBytesLen - 1
-	markTombstone     byte = 't'
-)
-
 var restoreChunkKeys = 10000 // non-const for testing
 var defaultCompactBatchLimit = 1000
 var minimumBatchInterval = 10 * time.Millisecond
@@ -323,9 +314,8 @@ func (s *store) Restore(b backend.Backend) error {
 func (s *store) restore() error {
 	s.setupMetricsReporter()
 
-	min, max := newRevBytes(), newRevBytes()
-	revToBytes(revision{main: 1}, min)
-	revToBytes(revision{main: math.MaxInt64, sub: math.MaxInt64}, max)
+	min := revision{main: 1}.Bytes()
+	max := revision{main: math.MaxInt64, sub: math.MaxInt64}.Bytes()
 
 	keyToLease := make(map[string]lease.LeaseID)
 
@@ -465,7 +455,7 @@ func restoreIntoIndex(lg *zap.Logger, idx index) (chan<- revKeyValue, <-chan int
 				}
 				ki.put(lg, rev.main, rev.sub)
 			} else if !isTombstone(rkv.key) {
-				ki.restore(lg, revision{rkv.kv.CreateRevision, 0}, rev, rkv.kv.Version)
+				ki.restore(lg, revision{main: rkv.kv.CreateRevision}, rev, rkv.kv.Version)
 				idx.Insert(ki)
 				kiCache[rkv.kstr] = ki
 			}
@@ -526,21 +516,4 @@ func (s *store) setupMetricsReporter() {
 		return float64(s.compactMainRev)
 	}
 	reportCompactRevMu.Unlock()
-}
-
-// appendMarkTombstone appends tombstone mark to normal revision bytes.
-func appendMarkTombstone(lg *zap.Logger, b []byte) []byte {
-	if len(b) != revBytesLen {
-		lg.Panic(
-			"cannot append tombstone mark to non-normal revision bytes",
-			zap.Int("expected-revision-bytes-size", revBytesLen),
-			zap.Int("given-revision-bytes-size", len(b)),
-		)
-	}
-	return append(b, markTombstone)
-}
-
-// isTombstone checks whether the revision bytes is a tombstone.
-func isTombstone(b []byte) bool {
-	return len(b) == markedRevBytesLen && b[markBytePosition] == markTombstone
 }

@@ -260,9 +260,8 @@ func (tw *storeTxnWrite) deleteRange(key, end []byte) int64 {
 }
 
 func (tw *storeTxnWrite) delete(key []byte) {
-	ibytes := newRevBytes()
 	idxRev := revision{main: tw.beginRev + 1, sub: int64(len(tw.changes))}
-	revToBytes(idxRev, ibytes)
+	ibytes := idxRev.Bytes()
 
 	ibytes = appendMarkTombstone(tw.storeTxnRead.s.lg, ibytes)
 

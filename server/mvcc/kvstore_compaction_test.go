@@ -29,7 +29,7 @@ import (
 )
 
 func TestScheduleCompaction(t *testing.T) {
-	revs := []revision{{1, 0}, {2, 0}, {3, 0}}
+	revs := []revision{{main: 1}, {main: 2}, {main: 3}}
 
 	tests := []struct {
 		rev   int64
@@ -72,10 +72,8 @@ func TestScheduleCompaction(t *testing.T) {
 		tx := s.b.BatchTx()
 
 		tx.Lock()
-		ibytes := newRevBytes()
 		for _, rev := range revs {
-			revToBytes(rev, ibytes)
-			tx.UnsafePut(buckets.Key, ibytes, []byte("bar"))
+			tx.UnsafePut(buckets.Key, rev.Bytes(), []byte("bar"))
 		}
 		tx.Unlock()
 
