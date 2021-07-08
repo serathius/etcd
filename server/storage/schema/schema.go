@@ -28,27 +28,45 @@ var (
 	V3_6 = semver.Version{Major: 3, Minor: 6}
 )
 
-// UpdateStorageSchema updates storage version.
-func UpdateStorageSchema(lg *zap.Logger, tx backend.BatchTx) error {
-	tx.Lock()
-	defer tx.Unlock()
-	v, err := detectStorageVersion(lg, tx)
+// Migrate updates storage version to provided target version.
+func Migrate(lg *zap.Logger, tx backend.BatchTx, target semver.Version) error {
+	ver, err := detectStorageVersion(lg, tx)
 	if err != nil {
 		return fmt.Errorf("cannot determine storage version: %w", err)
 	}
-	switch *v {
-	case V3_5:
-		lg.Warn("setting storage version", zap.String("storage-version", V3_6.String()))
-		// All meta keys introduced in v3.6 should be filled in here.
-		UnsafeSetStorageVersion(tx, &V3_6)
-	case V3_6:
-	default:
-		lg.Warn("unknown storage version", zap.String("storage-version", v.String()))
+	if ver.Major != target.Major {
+		lg.Panic("Chaning major storage version is not supported",
+			zap.String("storage-version", ver.String()),
+			zap.String("target-storage-version", target.String()),
+		)
+	}
+	if ver.Minor > target.Minor {
+		lg.Panic("Downgrades are not yet supported",
+			zap.String("storage-version", ver.String()),
+			zap.String("target-storage-version", target.String()),
+		)
+	}
+	for ver.Minor != target.Minor {
+		next := semver.Version{Major: ver.Major}
+		upgrade := ver.Minor < target.Minor
+		if upgrade {
+			next.Minor = ver.Minor + 1
+		} else {
+			next.Minor = ver.Minor - 1
+		}
+		err := migrateOnce(lg, tx, next, upgrade)
+		if err != nil {
+			return err
+		}
+		ver = &next
+		lg.Info("upgraded storage version", zap.String("storage-version", ver.String()))
 	}
 	return nil
 }
 
 func detectStorageVersion(lg *zap.Logger, tx backend.ReadTx) (*semver.Version, error) {
+	tx.Lock()
+	defer tx.Unlock()
 	v := UnsafeReadStorageVersion(tx)
 	if v != nil {
 		return v, nil
@@ -63,4 +81,55 @@ func detectStorageVersion(lg *zap.Logger, tx backend.ReadTx) (*semver.Version, e
 	}
 	copied := V3_5
 	return &copied, nil
+}
+
+func migrateOnce(lg *zap.Logger, tx backend.BatchTx, next semver.Version, upgrade bool) error {
+	ms, found := schema[next]
+	if !found {
+		lg.Panic("version is not supported", zap.String("storage-version", next.String()))
+	}
+	var err error
+	tx.Lock()
+	defer tx.Unlock()
+	for _, m := range ms {
+		if upgrade {
+			err = m.UnsafeUpgrade(tx)
+		} else {
+			err = m.UnsafeDowngrade(tx)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	// Storage version is available since v3.6
+	if next != V3_5 {
+		UnsafeSetStorageVersion(tx, &next)
+	}
+	return nil
+}
+
+var schema = map[semver.Version][]Migration{
+	V3_6: {
+		&newField{bucket: Meta, fieldName: MetaStorageVersionName, fieldValue: []byte("")},
+	},
+}
+
+type Migration interface {
+	UnsafeUpgrade(backend.BatchTx) error
+	UnsafeDowngrade(backend.BatchTx) error
+}
+
+type newField struct {
+	bucket     backend.Bucket
+	fieldName  []byte
+	fieldValue []byte
+}
+
+func (m *newField) UnsafeUpgrade(tx backend.BatchTx) error {
+	tx.UnsafePut(m.bucket, m.fieldName, m.fieldValue)
+	return nil
+}
+func (m *newField) UnsafeDowngrade(tx backend.BatchTx) error {
+	tx.UnsafeDelete(m.bucket, m.fieldName)
+	return nil
 }

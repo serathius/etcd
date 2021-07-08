@@ -2139,7 +2139,7 @@ func (s *EtcdServer) snapshot(snapi uint64, confState raftpb.ConfState) {
 		// Update storage schema after snapshot as fields introduced in v3.5 should be set.
 		// Remove in v3.7
 		s.updateStorageSchema.Do(func() {
-			err := schema.UpdateStorageSchema(s.lg, s.be.BatchTx())
+			err := schema.Migrate(s.lg, s.be.BatchTx(), schema.V3_6)
 			if err != nil {
 				s.lg.Warn("failed to update storage version", zap.Error(err))
 			}
