@@ -100,6 +100,7 @@ func bootstrap(cfg config.ServerConfig) (b *bootstrappedServer, err error) {
 	if terr := fileutil.TouchDirAll(cfg.MemberDir()); terr != nil {
 		return nil, fmt.Errorf("cannot access member directory: %v", terr)
 	}
+	boostrapStorageSchema(cfg.Logger, be)
 	b.prt = prt
 	b.ci = ci
 	b.st = st
@@ -338,6 +339,14 @@ func bootstrapWithWAL(cfg config.ServerConfig, st v2store.Store, be backend.Back
 		return nil, fmt.Errorf("database file (%v) of the backend is missing", bepath)
 	}
 	return r, nil
+}
+
+func boostrapStorageSchema(lg *zap.Logger, be backend.Backend) {
+	err := schema.UpdateStorageSchema(lg, be.BatchTx())
+	if err != nil {
+		// Can fail as it requires all fields to be set. Fields introduced in v3.5 will be set only after snapshot.
+		lg.Warn("failed to update storage version, will try again after first wal snapshot", zap.Error(err))
+	}
 }
 
 func bootstrapRaftFromCluster(cfg config.ServerConfig, cl *membership.RaftCluster, ids []types.ID) *bootstrappedRaft {

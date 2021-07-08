@@ -2136,6 +2136,8 @@ func (s *EtcdServer) snapshot(snapi uint64, confState raftpb.ConfState) {
 			"saved snapshot",
 			zap.Uint64("snapshot-index", snap.Metadata.Index),
 		)
+		// Update storage schema after snapshot as fields introduced in v3.5 should be set.
+		// Remove in v3.7
 		s.updateStorageSchema.Do(func() {
 			err := schema.UpdateStorageSchema(s.lg, s.be.BatchTx())
 			if err != nil {
