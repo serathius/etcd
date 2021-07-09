@@ -89,7 +89,7 @@ func DefaultIgnores(bucket, key []byte) bool {
 	// consistent index & term might be changed due to v2 internal sync, which
 	// is not controllable by the user.
 	return bytes.Compare(bucket, Meta.Name()) == 0 &&
-		(bytes.Compare(key, MetaTermKeyName) == 0 || bytes.Compare(key, MetaConsistentIndexKeyName) == 0)
+		(bytes.Compare(key, MetaTermKeyName) == 0 || bytes.Compare(key, MetaConsistentIndexKeyName) == 0 || bytes.Compare(key, MetaStorageVersionName) == 0)
 }
 
 func BackendMemberKey(id types.ID) []byte {
