@@ -46,6 +46,10 @@ func Migrate(lg *zap.Logger, tx backend.BatchTx, target semver.Version) error {
 			zap.String("target-storage-version", target.String()),
 		)
 	}
+	if ver.Minor == target.Minor {
+		lg.Info("storage version up-to-date", zap.String("storage-version", ver.String()))
+		return nil
+	}
 	for ver.Minor != target.Minor {
 		next := semver.Version{Major: ver.Major}
 		upgrade := ver.Minor < target.Minor
@@ -86,7 +90,7 @@ func detectStorageVersion(lg *zap.Logger, tx backend.ReadTx) (*semver.Version, e
 func migrateOnce(lg *zap.Logger, tx backend.BatchTx, next semver.Version, upgrade bool) error {
 	ms, found := schema[next]
 	if !found {
-		lg.Panic("version is not supported", zap.String("storage-version", next.String()))
+		lg.Panic("storage version is not supported", zap.String("storage-version", next.String()))
 	}
 	var err error
 	tx.Lock()
