@@ -27,7 +27,6 @@ import (
 
 	etcdservergw "go.etcd.io/etcd/api/v3/etcdserverpb/gw"
 	"go.etcd.io/etcd/client/pkg/v3/transport"
-	"go.etcd.io/etcd/client/v3/credentials"
 	"go.etcd.io/etcd/pkg/v3/debugutil"
 	"go.etcd.io/etcd/pkg/v3/httputil"
 	"go.etcd.io/etcd/server/v3/config"
@@ -71,6 +70,7 @@ type servers struct {
 	secure bool
 	grpc   *grpc.Server
 	http   *http.Server
+	cmux   cmux.CMux
 }
 
 func newServeCtx(lg *zap.Logger) *serveCtx {
@@ -124,7 +124,12 @@ func (sctx *serveCtx) serve(
 	}()
 
 	// Make sure serversC is closed even if we prematurely exit the function.
-	defer close(sctx.serversC)
+	var closed bool
+	defer func() {
+		if !closed {
+			close(sctx.serversC)
+		}
+	}()
 
 	if sctx.insecure {
 		gs = v3rpc.Server(s, nil, nil, gopts...)
@@ -158,7 +163,7 @@ func (sctx *serveCtx) serve(
 		httpl := m.Match(cmux.HTTP1())
 		go func() { errHandler(srvhttp.Serve(httpl)) }()
 
-		sctx.serversC <- &servers{grpc: gs, http: srvhttp}
+		sctx.serversC <- &servers{grpc: gs, http: srvhttp, cmux: m}
 		sctx.lg.Info(
 			"serving client traffic insecurely; this is strongly discouraged!",
 			zap.String("address", sctx.l.Addr().String()),
@@ -166,56 +171,55 @@ func (sctx *serveCtx) serve(
 	}
 
 	if sctx.secure {
-		tlscfg, tlsErr := tlsinfo.ServerConfig()
-		if tlsErr != nil {
-			return tlsErr
-		}
-		gs = v3rpc.Server(s, tlscfg, nil, gopts...)
+		gs = v3rpc.Server(s, nil, nil, gopts...)
 		v3electionpb.RegisterElectionServer(gs, servElection)
 		v3lockpb.RegisterLockServer(gs, servLock)
 		if sctx.serviceRegister != nil {
 			sctx.serviceRegister(gs)
 		}
-		handler = grpcHandlerFunc(gs, handler)
-
-		var gwmux *gw.ServeMux
-		if s.Cfg.EnableGRPCGateway {
-			dtls := tlscfg.Clone()
-			// trust local server
-			dtls.InsecureSkipVerify = true
-			bundle := credentials.NewBundle(credentials.Config{TLSConfig: dtls})
-			opts := []grpc.DialOption{grpc.WithTransportCredentials(bundle.TransportCredentials())}
-			gwmux, err = sctx.registerGateway(opts)
-			if err != nil {
-				return err
-			}
-		}
-
 		var tlsl net.Listener
 		tlsl, err = transport.NewTLSListener(m.Match(cmux.Any()), tlsinfo)
 		if err != nil {
 			return err
 		}
+
+		var gwmux *gw.ServeMux
+		if s.Cfg.EnableGRPCGateway {
+			gwmux, err = sctx.registerGateway([]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())})
+			if err != nil {
+				return err
+			}
+		}
+
 		// TODO: add debug flag; enable logging when debug flag is set
 		httpmux := sctx.createMux(gwmux, handler)
 
 		srv := &http.Server{
-			Handler:   createAccessController(sctx.lg, s, httpmux),
-			TLSConfig: tlscfg,
-			ErrorLog:  logger, // do not log user error
+			Handler:  createAccessController(sctx.lg, s, httpmux),
+			ErrorLog: logger, // do not log user error
 		}
 		if err := configureHttpServer(srv, s.Cfg); err != nil {
 			sctx.lg.Error("Configure https server failed", zap.Error(err))
 			return err
 		}
-		go func() { errHandler(srv.Serve(tlsl)) }()
+		m2 := cmux.New(tlsl)
+		//grpcl := m2.Match(cmux.HTTP2())
+		//grpcl := m.Match(cmux.HTTP2HeaderField("content-type", "application/grpc"))
+		grpcl := m.MatchWithWriters(cmux.HTTP2MatchHeaderFieldSendSettings("content-type", "application/grpc"))
+		httpl := m2.Match(cmux.Any())
 
-		sctx.serversC <- &servers{secure: true, grpc: gs, http: srv}
+		go func() { errHandler(gs.Serve(grpcl)) }()
+		go func() { errHandler(srv.Serve(httpl)) }()
+		go func() { errHandler(m2.Serve()) }()
+
+		sctx.serversC <- &servers{grpc: gs, http: srv, cmux: m}
 		sctx.lg.Info(
 			"serving client traffic securely",
 			zap.String("address", sctx.l.Addr().String()),
 		)
 	}
+	close(sctx.serversC)
+	closed = true
 
 	return m.Serve()
 }
@@ -224,25 +228,7 @@ func configureHttpServer(srv *http.Server, cfg config.ServerConfig) error {
 	// todo (ahrtr): should we support configuring other parameters in the future as well?
 	return http2.ConfigureServer(srv, &http2.Server{
 		MaxConcurrentStreams: cfg.MaxConcurrentStreams,
-		// Override to avoid using priority scheduler which is affected by https://github.com/golang/go/issues/58804.
-		NewWriteScheduler: http2.NewRandomWriteScheduler,
-	})
-}
-
-// grpcHandlerFunc returns an http.Handler that delegates to grpcServer on incoming gRPC
-// connections or otherHandler otherwise. Given in gRPC docs.
-func grpcHandlerFunc(grpcServer *grpc.Server, otherHandler http.Handler) http.Handler {
-	if otherHandler == nil {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			grpcServer.ServeHTTP(w, r)
-		})
-	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.ProtoMajor == 2 && strings.Contains(r.Header.Get("Content-Type"), "application/grpc") {
-			grpcServer.ServeHTTP(w, r)
-		} else {
-			otherHandler.ServeHTTP(w, r)
-		}
+		NewWriteScheduler:    nil,
 	})
 }
 
