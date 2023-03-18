@@ -137,28 +137,59 @@ gofail-disable: install-gofail
 install-gofail:
 	cd tools/mod; go install go.etcd.io/gofail@${GOFAIL_VERSION}
 
-build-failpoints-release-3.5:
-	rm -rf /tmp/etcd-release-3.5/
-	mkdir -p /tmp/etcd-release-3.5/
-	cd /tmp/etcd-release-3.5/; \
-	  git clone --depth 1 --branch release-3.5 https://github.com/etcd-io/etcd.git .; \
+# Reproduce historical issues
+
+.PHONY: reproduce-issue14370
+reproduce-issue14370: ./bin/etcd-v3.5.4-failpoints
+	cp ./bin/etcd-v3.5.4-failpoints ./bin/etcd
+	GO_TEST_FLAGS='-v --run=TestRobustness/Issue14370 --count 100 --failfast' make test-robustness
+
+.PHONY: reproduce-issue13766
+reproduce-issue13766: ./bin/etcd-v3.5.2-failpoints
+	cp ./bin/etcd-v3.5.2-failpoints ./bin/etcd
+	GO_TEST_FLAGS='-v --run=TestRobustness/Issue13766 --count 100 --failfast' make test-robustness
+
+.PHONY: reproduce-issue14685
+reproduce-issue14685: ./bin/etcd-v3.5.5-failpoints
+	cp ./bin/etcd-v3.5.5-failpoints ./bin/etcd
+	GO_TEST_FLAGS='-v --run=TestRobustness/Issue14685 --count 100 --failfast' make test-robustness
+
+./bin/etcd-v3.6.0-failpoints:
+	rm -rf /tmp/etcd-release-v3.6.0/
+	mkdir -p /tmp/etcd-release-v3.6.0/
+	cd /tmp/etcd-release-v3.6.0/; \
+	  git clone --depth 1 --branch main https://github.com/etcd-io/etcd.git .; \
+	  make gofail-enable; \
+	  make build;
+	mkdir -p ./bin
+	cp /tmp/etcd-release-v3.6.0/bin/etcd ./bin/etcd-v3.6.0-failpoints
+
+./bin/etcd-v3.5.2-failpoints:
+./bin/etcd-v3.5.4-failpoints:
+./bin/etcd-v3.5.6-failpoints:
+./bin/etcd-v3.5.%-failpoints:
+	rm -rf /tmp/etcd-release-v3.5.$*/
+	mkdir -p /tmp/etcd-release-v3.5.$*/
+	cd /tmp/etcd-release-v3.5.$*/; \
+	  git clone --depth 1 --branch v3.5.$* https://github.com/etcd-io/etcd.git .; \
 	  go get go.etcd.io/gofail@${GOFAIL_VERSION}; \
 	  (cd server; go get go.etcd.io/gofail@${GOFAIL_VERSION}); \
 	  (cd etcdctl; go get go.etcd.io/gofail@${GOFAIL_VERSION}); \
 	  (cd etcdutl; go get go.etcd.io/gofail@${GOFAIL_VERSION}); \
 	  FAILPOINTS=true ./build;
 	mkdir -p ./bin
-	cp /tmp/etcd-release-3.5/bin/etcd ./bin/etcd
+	cp /tmp/etcd-release-v3.5.$*/bin/etcd $@
 
-build-failpoints-release-3.4:
-	rm -rf /tmp/etcd-release-3.4/
-	mkdir -p /tmp/etcd-release-3.4/
-	cd /tmp/etcd-release-3.4/; \
-	  git clone --depth 1 --branch release-3.4 https://github.com/etcd-io/etcd.git .; \
+./bin/etcd-v3.4.23-failpoints:
+./bin/etcd-v3.4.%-failpoints:
+	rm -rf /tmp/etcd-release-v3.4.$*/
+	mkdir -p /tmp/etcd-release-v3.4.$*/
+	cd /tmp/etcd-release-v3.4.$*/; \
+	  git clone --depth 1 --branch v3.4.$* https://github.com/etcd-io/etcd.git .; \
 	  go get go.etcd.io/gofail@${GOFAIL_VERSION}; \
 	  FAILPOINTS=true ./build;
 	mkdir -p ./bin
-	cp /tmp/etcd-release-3.4/bin/etcd ./bin/etcd
+	cp /tmp/etcd-release-v3.4.$*/bin/etcd $@
 
 # Cleanup
 
