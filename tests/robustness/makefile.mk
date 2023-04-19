@@ -11,9 +11,9 @@ test-robustness-release-3.4: /tmp/etcd-release-3.4-failpoints/bin
 # Reproduce historical issues
 
 .PHONY: test-robustness-issue14370
-test-robustness-issue14370: /tmp/etcd-v3.5.4-failpoints/bin
-	GO_TEST_FLAGS='-v --run=TestRobustness/Issue14370 --count 100 --failfast --bin-dir=/tmp/etcd-v3.5.4-failpoints/bin' make test-robustness && \
-	 echo "Failed to reproduce" || echo "Successful reproduction"
+test-robustness-issue14370:
+	@GO_TEST_FLAGS="-v --run=TestRobustness/Issue14370 --count 100 --failfast --bin-dir=$${PWD}/bin/etcd-v3.5.4-failpoints/" make test-robustness 2>&1 | grep --color -E '.*Model is not linearizable|--- FAIL:.*|'
+
 
 .PHONY: test-robustness-issue13766
 test-robustness-issue13766: /tmp/etcd-v3.5.2-failpoints/bin
@@ -63,6 +63,10 @@ install-gofail:
 	  git clone --depth 1 --branch main https://github.com/etcd-io/etcd.git .; \
 	  make gofail-enable; \
 	  make build;
+bin/etcd-v3.5.4-failpoints/etcd bin/etcd-v3.5.4-failpoints/etcdctl: /tmp/etcd-v3.5.4-failpoints/bin
+	mkdir -p bin/etcd-v3.5.4-failpoints/
+	cp /tmp/etcd-v3.5.4-failpoints/bin/etcd bin/etcd-v3.5.4-failpoints/etcd
+	cp /tmp/etcd-v3.5.4-failpoints/bin/etcdctl bin/etcd-v3.5.4-failpoints/etcdctl
 
 /tmp/etcd-v3.5.2-failpoints/bin:
 /tmp/etcd-v3.5.4-failpoints/bin:

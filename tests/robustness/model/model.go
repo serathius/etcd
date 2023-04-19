@@ -227,12 +227,12 @@ func describeTxnResponse(request *TxnRequest, response *TxnResponse) string {
 func describeEtcdOperation(op EtcdOperation) string {
 	switch op.Type {
 	case Get:
-		return fmt.Sprintf("get(%q)", op.Key)
+		return "get()"
 	case Put:
 		if op.LeaseID != 0 {
-			return fmt.Sprintf("put(%q, %s, %d)", op.Key, describeValueOrHash(op.Value), op.LeaseID)
+			return fmt.Sprintf("put(%s, %d)", describeValueOrHash(op.Value), op.LeaseID)
 		}
-		return fmt.Sprintf("put(%q, %s, nil)", op.Key, describeValueOrHash(op.Value))
+		return fmt.Sprintf("put(%s)", describeValueOrHash(op.Value))
 	case Delete:
 		return fmt.Sprintf("delete(%q)", op.Key)
 	default:

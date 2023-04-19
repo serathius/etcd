@@ -79,15 +79,12 @@ if [[ -n "${CPU:-}" ]]; then
   COMMON_TEST_FLAGS+=("--cpu=${CPU}")
 fi 
 
-log_callout "Running with ${COMMON_TEST_FLAGS[*]}"
-
 RUN_ARG=()
 if [ -n "${TESTCASE:-}" ]; then
   RUN_ARG=("-run=${TESTCASE}")
 fi
 
 function build_pass {
-  log_callout "Building etcd"
   run_for_modules run go build "${@}" || return 2
   GO_BUILD_FLAGS="-v" etcd_build "${@}"
   GO_BUILD_FLAGS="-v" tools_build "${@}"
@@ -644,11 +641,9 @@ function goimport_pass {
 function run_pass {
   local pass="${1}"
   shift 1
-  log_callout -e "\\n'${pass}' started at $(date)"
   if "${pass}_pass" "$@" ; then
-    log_success "'${pass}' completed at $(date)"
+	  :
   else
-    log_error "FAIL: '${pass}' failed at $(date)"
     exit 255
   fi
 }

@@ -98,16 +98,16 @@ func injectFailpoints(ctx context.Context, t *testing.T, lg *zap.Logger, clus *e
 			return
 		}
 
-		lg.Info("Triggering failpoint", zap.String("failpoint", config.failpoint.Name()))
+		lg.Info("Preparing to inject failpoint", zap.String("failpoint", config.failpoint.Name()))
 		err = config.failpoint.Inject(ctx, t, lg, clus)
 		if err != nil {
 			select {
 			case <-ctx.Done():
-				t.Errorf("Triggering failpoints timed out, err: %v", ctx.Err())
+				t.Errorf("Failpoint injection timed out, err: %v", ctx.Err())
 				return
 			default:
 			}
-			lg.Info("Failed to trigger failpoint", zap.String("failpoint", config.failpoint.Name()), zap.Error(err))
+			lg.Info("Failed to inject failpoint", zap.String("failpoint", config.failpoint.Name()), zap.Error(err))
 			failures++
 			continue
 		}

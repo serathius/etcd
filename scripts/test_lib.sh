@@ -144,11 +144,9 @@ function run {
     repro="${command[*]}"
   fi
 
-  log_cmd "% ${repro}"
   "${@}" 2> >(while read -r line; do echo -e "${COLOR_NONE}stderr: ${COLOR_MAGENTA}${line}${COLOR_NONE}">&2; done)
   local error_code=$?
   if [ ${error_code} -ne 0 ]; then
-    log_error -e "FAIL: (code:${error_code}):\\n  % ${repro}"
     return ${error_code}
   fi
 }
@@ -332,7 +330,6 @@ function go_test {
   done
 
   if [ -n "${failures[*]}" ] ; then
-    log_error -e "ERROR: Tests for following packages failed:\\n  ${failures[*]}"
     return 2
   fi
 }

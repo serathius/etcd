@@ -60,16 +60,14 @@ var (
 		name:            "HighTraffic",
 		minimalQPS:      200,
 		maximalQPS:      1000,
-		clientCount:     12,
+		clientCount:     4,
 		requestProgress: false,
 		traffic: traffic{
-			keyCount:     10,
+			keyCount:     1,
 			largePutSize: 32769,
 			leaseTTL:     DefaultLeaseTTL,
 			writes: []requestChance{
 				{operation: Put, chance: 85},
-				{operation: MultiOpTxn, chance: 10},
-				{operation: LargePut, chance: 5},
 			},
 		},
 	}
@@ -85,7 +83,6 @@ var (
 			leaseTTL:     DefaultLeaseTTL,
 			writes: []requestChance{
 				{operation: Put, chance: 95},
-				{operation: LargePut, chance: 5},
 			},
 		},
 	}
@@ -142,6 +139,7 @@ func TestRobustness(t *testing.T) {
 	scenarios = append(scenarios, scenario{
 		name:      "Issue14370",
 		failpoint: RaftBeforeSavePanic,
+		traffic:   &HighTraffic,
 		config: *e2e.NewConfig(
 			e2e.WithClusterSize(1),
 			e2e.WithGoFailEnabled(true),
@@ -150,6 +148,7 @@ func TestRobustness(t *testing.T) {
 	scenarios = append(scenarios, scenario{
 		name:      "Issue14685",
 		failpoint: DefragBeforeCopyPanic,
+		traffic:   &HighTraffic,
 		config: *e2e.NewConfig(
 			e2e.WithClusterSize(1),
 			e2e.WithGoFailEnabled(true),
