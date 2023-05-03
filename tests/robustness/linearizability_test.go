@@ -16,6 +16,7 @@ package robustness
 
 import (
 	"context"
+	"go.etcd.io/etcd/api/v3/version"
 	"testing"
 	"time"
 
@@ -24,7 +25,6 @@ import (
 	"go.uber.org/zap/zaptest"
 	"golang.org/x/sync/errgroup"
 
-	"go.etcd.io/etcd/api/v3/version"
 	"go.etcd.io/etcd/tests/v3/framework/e2e"
 	"go.etcd.io/etcd/tests/v3/robustness/model"
 )
@@ -73,6 +73,15 @@ var (
 			},
 		},
 	}
+	KubernetesTraffic = trafficConfig{
+		name:        "Kubernetes",
+		minimalQPS:  200,
+		maximalQPS:  1000,
+		clientCount: 12,
+		traffic: kubernetesTraffic{
+			keyCount: 5,
+		},
+	}
 	ReqProgTraffic = trafficConfig{
 		name:            "RequestProgressTraffic",
 		minimalQPS:      200,
@@ -108,6 +117,14 @@ func TestRobustness(t *testing.T) {
 		traffic   *trafficConfig
 	}
 	scenarios := []scenario{}
+	scenarios = append(scenarios, scenario{
+		name:      "Kubernetes",
+		failpoint: NormalOperations,
+		traffic:   &KubernetesTraffic,
+		config: *e2e.NewConfig(
+			e2e.WithClusterSize(1),
+		),
+	})
 	for _, traffic := range trafficList {
 		scenarios = append(scenarios, scenario{
 			name:      "ClusterOfSize1/" + traffic.name,
@@ -139,14 +156,6 @@ func TestRobustness(t *testing.T) {
 			config:    *e2e.NewConfig(clusterOfSize3Options...),
 		})
 	}
-	scenarios = append(scenarios, scenario{
-		name:      "Issue14370",
-		failpoint: RaftBeforeSavePanic,
-		config: *e2e.NewConfig(
-			e2e.WithClusterSize(1),
-			e2e.WithGoFailEnabled(true),
-		),
-	})
 	scenarios = append(scenarios, scenario{
 		name:      "Issue14685",
 		failpoint: DefragBeforeCopyPanic,

@@ -35,6 +35,7 @@ const (
 )
 
 var (
+	NormalOperations                         Failpoint = normalOperations{}
 	KillFailpoint                            Failpoint = killFailpoint{}
 	DefragBeforeCopyPanic                    Failpoint = goPanicFailpoint{"defragBeforeCopy", triggerDefrag{}, AnyMember}
 	DefragBeforeRenamePanic                  Failpoint = goPanicFailpoint{"defragBeforeRename", triggerDefrag{}, AnyMember}
@@ -65,6 +66,7 @@ var (
 	RaftBeforeSaveSnapPanic                  Failpoint = goPanicFailpoint{"raftBeforeSaveSnap", triggerBlackhole{waitTillSnapshot: true}, Follower}
 	RaftAfterSaveSnapPanic                   Failpoint = goPanicFailpoint{"raftAfterSaveSnap", triggerBlackhole{waitTillSnapshot: true}, Follower}
 	RandomFailpoint                          Failpoint = randomFailpoint{[]Failpoint{
+		NormalOperations,
 		KillFailpoint, BeforeCommitPanic, AfterCommitPanic, RaftBeforeSavePanic, RaftAfterSavePanic,
 		DefragBeforeCopyPanic, DefragBeforeRenamePanic, BackendBeforePreCommitHookPanic, BackendAfterPreCommitHookPanic,
 		BackendBeforeStartDBTxnPanic, BackendAfterStartDBTxnPanic, BackendBeforeWritebackBufPanic,
@@ -170,6 +172,20 @@ type Failpoint interface {
 
 type AvailabilityChecker interface {
 	Available(e2e.EtcdProcessClusterConfig, e2e.EtcdProcess) bool
+}
+type normalOperations struct{}
+
+func (f normalOperations) Inject(ctx context.Context, t *testing.T, lg *zap.Logger, clus *e2e.EtcdProcessCluster) error {
+	time.Sleep(5 * time.Second)
+	return nil
+}
+
+func (f normalOperations) Name() string {
+	return "Normal"
+}
+
+func (f normalOperations) Available(e2e.EtcdProcessClusterConfig, e2e.EtcdProcess) bool {
+	return true
 }
 
 type killFailpoint struct{}
