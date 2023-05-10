@@ -32,11 +32,17 @@ import (
 // clientv3.Client) that records all the requests and responses made. Doesn't
 // allow for concurrent requests to ensure correct appending to history.
 type RecordingClient struct {
-	client   clientv3.Client
-	baseTime time.Time
+	client         clientv3.Client
+	baseTime       time.Time
+	watchResponses []watchResponse
 	// mux ensures order of request appending.
-	mux     sync.Mutex
-	history *model.AppendableHistory
+	mux        sync.Mutex
+	operations *model.AppendableHistory
+}
+
+type watchResponse struct {
+	clientv3.WatchResponse
+	time time.Time
 }
 
 func NewClient(endpoints []string, ids identity.Provider, baseTime time.Time) (*RecordingClient, error) {
@@ -50,9 +56,9 @@ func NewClient(endpoints []string, ids identity.Provider, baseTime time.Time) (*
 		return nil, err
 	}
 	return &RecordingClient{
-		client:   *cc,
-		history:  model.NewAppendableHistory(ids),
-		baseTime: baseTime,
+		client:     *cc,
+		operations: model.NewAppendableHistory(ids),
+		baseTime:   baseTime,
 	}, nil
 }
 
@@ -61,21 +67,21 @@ func (c *RecordingClient) Close() error {
 }
 
 func (c *RecordingClient) Operations() model.History {
-	return c.history.History
+	return c.operations.History
 }
 
 func (c *RecordingClient) Get(ctx context.Context, key string) (*mvccpb.KeyValue, error) {
 	resp, err := c.Range(ctx, key, false)
-	if err != nil || len(resp) == 0 {
+	if err != nil || len(resp.Kvs) == 0 {
 		return nil, err
 	}
-	if len(resp) == 1 {
-		return resp[0], err
+	if len(resp.Kvs) == 1 {
+		return resp.Kvs[0], err
 	}
-	panic(fmt.Sprintf("Unexpected response size: %d", len(resp)))
+	panic(fmt.Sprintf("Unexpected response size: %d", len(resp.Kvs)))
 }
 
-func (c *RecordingClient) Range(ctx context.Context, key string, withPrefix bool) ([]*mvccpb.KeyValue, error) {
+func (c *RecordingClient) Range(ctx context.Context, key string, withPrefix bool) (*clientv3.GetResponse, error) {
 	ops := []clientv3.OpOption{}
 	if withPrefix {
 		ops = append(ops, clientv3.WithPrefix())
@@ -88,9 +94,9 @@ func (c *RecordingClient) Range(ctx context.Context, key string, withPrefix bool
 		return nil, err
 	}
 	returnTime := time.Since(c.baseTime)
-	c.history.AppendRange(key, withPrefix, callTime, returnTime, resp)
+	c.operations.AppendRange(key, withPrefix, callTime, returnTime, resp)
 	c.mux.Unlock()
-	return resp.Kvs, nil
+	return resp, nil
 }
 
 func (c *RecordingClient) Put(ctx context.Context, key, value string) error {
@@ -98,7 +104,7 @@ func (c *RecordingClient) Put(ctx context.Context, key, value string) error {
 	callTime := time.Since(c.baseTime)
 	resp, err := c.client.Put(ctx, key, value)
 	returnTime := time.Since(c.baseTime)
-	c.history.AppendPut(key, value, callTime, returnTime, resp, err)
+	c.operations.AppendPut(key, value, callTime, returnTime, resp, err)
 	c.mux.Unlock()
 	return err
 }
@@ -108,7 +114,7 @@ func (c *RecordingClient) Delete(ctx context.Context, key string) error {
 	callTime := time.Since(c.baseTime)
 	resp, err := c.client.Delete(ctx, key)
 	returnTime := time.Since(c.baseTime)
-	c.history.AppendDelete(key, callTime, returnTime, resp, err)
+	c.operations.AppendDelete(key, callTime, returnTime, resp, err)
 	c.mux.Unlock()
 	return nil
 }
@@ -119,7 +125,7 @@ func (c *RecordingClient) CompareRevisionAndDelete(ctx context.Context, key stri
 	callTime := time.Since(c.baseTime)
 	resp, err := txn.Commit()
 	returnTime := time.Since(c.baseTime)
-	c.history.AppendCompareRevisionAndDelete(key, expectedRevision, callTime, returnTime, resp, err)
+	c.operations.AppendCompareRevisionAndDelete(key, expectedRevision, callTime, returnTime, resp, err)
 	c.mux.Unlock()
 	return err
 }
@@ -130,7 +136,7 @@ func (c *RecordingClient) CompareRevisionAndPut(ctx context.Context, key, value 
 	callTime := time.Since(c.baseTime)
 	resp, err := txn.Commit()
 	returnTime := time.Since(c.baseTime)
-	c.history.AppendCompareRevisionAndPut(key, expectedRevision, value, callTime, returnTime, resp, err)
+	c.operations.AppendCompareRevisionAndPut(key, expectedRevision, value, callTime, returnTime, resp, err)
 	c.mux.Unlock()
 	return err
 }
@@ -160,7 +166,7 @@ func (c *RecordingClient) Txn(ctx context.Context, cmp []clientv3.Cmp, ops []cli
 	callTime := time.Since(c.baseTime)
 	resp, err := txn.Commit()
 	returnTime := time.Since(c.baseTime)
-	c.history.AppendTxn(cmp, ops, callTime, returnTime, resp, err)
+	c.operations.AppendTxn(cmp, ops, callTime, returnTime, resp, err)
 	c.mux.Unlock()
 	return err
 }
@@ -170,7 +176,7 @@ func (c *RecordingClient) LeaseGrant(ctx context.Context, ttl int64) (int64, err
 	callTime := time.Since(c.baseTime)
 	resp, err := c.client.Lease.Grant(ctx, ttl)
 	returnTime := time.Since(c.baseTime)
-	c.history.AppendLeaseGrant(callTime, returnTime, resp, err)
+	c.operations.AppendLeaseGrant(callTime, returnTime, resp, err)
 	c.mux.Unlock()
 	var leaseId int64
 	if resp != nil {
@@ -184,7 +190,7 @@ func (c *RecordingClient) LeaseRevoke(ctx context.Context, leaseId int64) error 
 	callTime := time.Since(c.baseTime)
 	resp, err := c.client.Lease.Revoke(ctx, clientv3.LeaseID(leaseId))
 	returnTime := time.Since(c.baseTime)
-	c.history.AppendLeaseRevoke(leaseId, callTime, returnTime, resp, err)
+	c.operations.AppendLeaseRevoke(leaseId, callTime, returnTime, resp, err)
 	c.mux.Unlock()
 	return err
 }
@@ -195,7 +201,7 @@ func (c *RecordingClient) PutWithLease(ctx context.Context, key string, value st
 	callTime := time.Since(c.baseTime)
 	resp, err := c.client.Put(ctx, key, value, opts)
 	returnTime := time.Since(c.baseTime)
-	c.history.AppendPutWithLease(key, value, leaseId, callTime, returnTime, resp, err)
+	c.operations.AppendPutWithLease(key, value, leaseId, callTime, returnTime, resp, err)
 	c.mux.Unlock()
 	return err
 }
@@ -205,7 +211,26 @@ func (c *RecordingClient) Defragment(ctx context.Context) error {
 	callTime := time.Since(c.baseTime)
 	resp, err := c.client.Defragment(ctx, c.client.Endpoints()[0])
 	returnTime := time.Since(c.baseTime)
-	c.history.AppendDefragment(callTime, returnTime, resp, err)
+	c.operations.AppendDefragment(callTime, returnTime, resp, err)
 	c.mux.Unlock()
 	return err
+}
+
+func (c *RecordingClient) Watch(ctx context.Context, key string, rev int64, withPrefix bool) clientv3.WatchChan {
+	ops := []clientv3.OpOption{clientv3.WithProgressNotify()}
+	if withPrefix {
+		ops = append(ops, clientv3.WithPrefix())
+	}
+	if rev != 0 {
+		ops = append(ops, clientv3.WithRev(rev))
+	}
+	resp := make(chan clientv3.WatchResponse)
+	go func() {
+		defer close(resp)
+		for r := range c.client.Watch(ctx, key, ops...) {
+			c.watchResponses = append(c.watchResponses, watchResponse{r, time.Now()})
+			resp <- r
+		}
+	}()
+	return resp
 }
