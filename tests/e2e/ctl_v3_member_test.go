@@ -27,6 +27,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.uber.org/zap"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/pkg/v3/expect"
@@ -77,16 +79,30 @@ func TestCtlV3ConsistentMemberList(t *testing.T) {
 		derr := epc.Close()
 		require.NoError(t, derr, "failed to close etcd cluster: %v", derr)
 	}()
+	cc, err := clientv3.New(clientv3.Config{
+		Endpoints:            epc.EndpointsGRPC(),
+		Logger:               zap.NewNop(),
+		DialKeepAliveTime:    10 * time.Second,
+		DialKeepAliveTimeout: 100 * time.Millisecond,
+	})
+	if err != nil {
+		panic(err)
+	}
+	defer cc.Close()
 
 	t.Log("Adding and then removing a learner")
-	resp, err := epc.Etcdctl().MemberAddAsLearner(ctx, "newLearner", []string{fmt.Sprintf("http://localhost:%d", e2e.EtcdProcessBasePort+11)})
+	resp, err := cc.MemberAddAsLearner(ctx, []string{fmt.Sprintf("http://localhost:%d", e2e.EtcdProcessBasePort+11)})
 	require.NoError(t, err)
-	_, err = epc.Etcdctl().MemberRemove(ctx, resp.Member.ID)
+	_, err = cc.MemberRemove(ctx, resp.Member.ID)
 	require.NoError(t, err)
 	t.Logf("Added and then removed a learner with ID: %x", resp.Member.ID)
 
 	t.Log("Restarting the etcd process to ensure all data is persisted")
-	err = epc.Procs[0].Restart(ctx)
+	err = epc.Procs[0].Kill()
+	require.NoError(t, err)
+	err = epc.Procs[0].Wait(context.TODO())
+	require.NoError(t, err)
+	err = epc.Procs[0].Start(context.TODO())
 	require.NoError(t, err)
 
 	var wg sync.WaitGroup
@@ -106,8 +122,12 @@ func TestCtlV3ConsistentMemberList(t *testing.T) {
 			default:
 			}
 
-			merr := epc.Procs[0].Restart(ctx)
-			require.NoError(t, merr)
+			err := epc.Procs[0].Kill()
+			require.NoError(t, err)
+			err = epc.Procs[0].Wait(context.TODO())
+			require.NoError(t, err)
+			err = epc.Procs[0].Start(context.TODO())
+			require.NoError(t, err)
 			epc.WaitLeader(t)
 
 			time.Sleep(100 * time.Millisecond)
@@ -129,7 +149,9 @@ func TestCtlV3ConsistentMemberList(t *testing.T) {
 			default:
 			}
 
-			mresp, merr := epc.Etcdctl().MemberList(ctx, true)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*10)
+			mresp, merr := cc.MemberList(ctx)
+			cancel()
 			if merr != nil {
 				continue
 			}
