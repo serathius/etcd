@@ -87,7 +87,10 @@ func bootstrap(cfg config.ServerConfig) (b *bootstrappedServer, err error) {
 		if err = fileutil.IsDirWriteable(cfg.WALDir()); err != nil {
 			return nil, fmt.Errorf("cannot write to WAL directory: %v", err)
 		}
-		bwal = bootstrapWALFromSnapshot(cfg, backend.snapshot)
+		bwal, err = bootstrapWAL(cfg, backend)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	cluster, err := bootstrapCluster(cfg, bwal, prt)
@@ -158,7 +161,7 @@ type bootstrappedRaft struct {
 
 	peers   []raft.Peer
 	config  *raft.Config
-	storage *raft.MemoryStorage
+	storage *MemoryStorage
 }
 
 func bootstrapStorage(cfg config.ServerConfig, st v2store.Store, be *bootstrappedBackend, wal *bootstrappedWAL, cl *bootstrapedCluster) *bootstrappedStorage {
@@ -511,7 +514,7 @@ func bootstrapRaftFromWAL(cfg config.ServerConfig, bwal *bootstrappedWAL) *boots
 	}
 }
 
-func raftConfig(cfg config.ServerConfig, id uint64, s *raft.MemoryStorage) *raft.Config {
+func raftConfig(cfg config.ServerConfig, id uint64, s *MemoryStorage) *raft.Config {
 	return &raft.Config{
 		ID:              id,
 		ElectionTick:    cfg.ElectionTicks,
@@ -547,16 +550,25 @@ func (b *bootstrappedRaft) newRaftNode(ss *snap.Snapshotter, wal *wal.WAL, cl *m
 	)
 }
 
-func bootstrapWALFromSnapshot(cfg config.ServerConfig, snapshot *raftpb.Snapshot) *bootstrappedWAL {
-	wal, st, ents, snap, meta := openWALFromSnapshot(cfg, snapshot)
+func bootstrapWAL(cfg config.ServerConfig, backend *bootstrappedBackend) (*bootstrappedWAL, error) {
+	wal, st, ents, _, meta := openWALFromSnapshot(cfg, backend.snapshot)
+	index, term := schema.ReadConsistentIndex(backend.be.ReadTx())
+	confstate := schema.UnsafeConfStateFromBackend(cfg.Logger, backend.be.ReadTx())
+	if backend.beExist && (confstate == nil || index == 0 || term != 0) {
+		return nil, fmt.Errorf("backend is missing crutial data")
+	}
 	bwal := &bootstrappedWAL{
-		lg:       cfg.Logger,
-		w:        wal,
-		st:       st,
-		ents:     ents,
-		snapshot: snap,
-		meta:     meta,
-		haveWAL:  true,
+		lg:      cfg.Logger,
+		w:       wal,
+		st:      st,
+		ents:    ents,
+		meta:    meta,
+		haveWAL: true,
+		v3state: &v3state{
+			confState: *confstate,
+			index:     index,
+			term:      term,
+		},
 	}
 
 	if cfg.ForceNewCluster {
@@ -579,7 +591,7 @@ func bootstrapWALFromSnapshot(cfg config.ServerConfig, snapshot *raftpb.Snapshot
 			zap.Uint64("commit-index", bwal.st.Commit),
 		)
 	}
-	return bwal
+	return bwal, nil
 }
 
 // openWALFromSnapshot reads the WAL at the given snap and returns the wal, its latest HardState and cluster ID, and all entries that appear
@@ -656,18 +668,27 @@ type bootstrappedWAL struct {
 	ents     []raftpb.Entry
 	snapshot *raftpb.Snapshot
 	meta     *snapshotMetadata
+	v3state  *v3state
 }
 
-func (wal *bootstrappedWAL) MemoryStorage() *raft.MemoryStorage {
-	s := raft.NewMemoryStorage()
-	if wal.snapshot != nil {
+type v3state struct {
+	confState raftpb.ConfState
+	index     uint64
+	term      uint64
+}
+
+func (wal *bootstrappedWAL) MemoryStorage() *MemoryStorage {
+	s := NewMemoryStorage()
+	if wal.v3state != nil {
+		s.ApplyConfState(wal.v3state.index, wal.v3state.term, wal.v3state.confState, wal.ents)
+	} else if wal.snapshot != nil {
 		s.ApplySnapshot(*wal.snapshot)
+		if wal.ents != nil {
+			s.Append(wal.ents)
+		}
 	}
 	if wal.st != nil {
 		s.SetHardState(*wal.st)
-	}
-	if len(wal.ents) != 0 {
-		s.Append(wal.ents)
 	}
 	return s
 }
