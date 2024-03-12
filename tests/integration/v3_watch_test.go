@@ -18,8 +18,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/stretchr/testify/assert"
+	"go.etcd.io/etcd/server/v3/storage/mvcc"
+	gofail "go.etcd.io/gofail/runtime"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1511,4 +1515,51 @@ func TestV3WatchProgressWaitsForSyncNoEvents(t *testing.T) {
 		}
 	}
 	require.True(t, gotProgressNotification, "Expected to get progress notification")
+}
+
+func TestV3NoEventsLostOnCompact(t *testing.T) {
+	if integration.ThroughProxy {
+		t.Skip("grpc proxy currently does not support requesting progress notifications")
+	}
+	integration.BeforeTest(t)
+
+	clus := integration.NewCluster(t, &integration.ClusterConfig{Size: 1})
+	defer clus.Terminate(t)
+
+	client := clus.RandClient()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	writeCount := mvcc.WatchStreamResponseBufferLen * 11 / 10
+
+	wch := client.Watch(ctx, "foo")
+	require.NoError(t, gofail.Enable("watchResponseSend", `sleep(1000)`))
+	var rev int64 = 0
+	for i := 0; i < writeCount; i++ {
+		resp, err := client.Put(ctx, "foo", "bar")
+		require.NoError(t, err)
+		rev = resp.Header.Revision
+	}
+	_, err := client.Compact(ctx, rev)
+	require.NoError(t, err)
+	time.Sleep(time.Second)
+	require.NoError(t, gofail.Disable("watchResponseSend"))
+
+	event_count := 0
+	compacted := false
+	for resp := range wch {
+		err = resp.Err()
+		if err != nil {
+			if !strings.Contains(err.Error(), "required revision has been compacted") {
+				t.Fatal(err)
+			}
+			compacted = true
+			break
+		}
+		event_count += len(resp.Events)
+		if event_count == writeCount {
+			break
+		}
+	}
+	assert.Truef(t, compacted, "Expected stream to get compacted, instead we got %d events out of %d events", event_count, writeCount)
 }

@@ -30,10 +30,13 @@ import (
 
 // non-const so modifiable by tests
 var (
-	// chanBufLen is the length of the buffered chan
+	// WatchStreamResponseBufferLen is the length of the buffered chan
 	// for sending out watched events.
 	// See https://github.com/etcd-io/etcd/issues/11906 for more detail.
-	chanBufLen = 128
+	WatchStreamResponseBufferLen = 128
+
+	// SyncWatchersPeriod is the period of syncing watchers.
+	SyncWatchersPeriod = 100 * time.Millisecond
 
 	// maxWatchersPerSync is the number of watchers to sync in a single batch
 	maxWatchersPerSync = 512
@@ -109,7 +112,7 @@ func (s *watchableStore) NewWatchStream() WatchStream {
 	watchStreamGauge.Inc()
 	return &watchStream{
 		watchable: s,
-		ch:        make(chan WatchResponse, chanBufLen),
+		ch:        make(chan WatchResponse, WatchStreamResponseBufferLen),
 		cancels:   make(map[WatchID]cancelFunc),
 		watchers:  make(map[WatchID]*watcher),
 	}
@@ -213,8 +216,7 @@ func (s *watchableStore) Restore(b backend.Backend) error {
 func (s *watchableStore) syncWatchersLoop() {
 	defer s.wg.Done()
 
-	waitDuration := 100 * time.Millisecond
-	delayTicker := time.NewTicker(waitDuration)
+	delayTicker := time.NewTicker(SyncWatchersPeriod)
 	defer delayTicker.Stop()
 
 	for {
@@ -229,7 +231,7 @@ func (s *watchableStore) syncWatchersLoop() {
 		}
 		syncDuration := time.Since(st)
 
-		delayTicker.Reset(waitDuration)
+		delayTicker.Reset(SyncWatchersPeriod)
 		// more work pending?
 		if unsyncedWatchers != 0 && lastUnsyncedWatchers > unsyncedWatchers {
 			// be fair to other store operations by yielding time taken
@@ -370,6 +372,12 @@ func (s *watchableStore) syncWatchers() int {
 	victims := make(watcherBatch)
 	wb := newWatcherBatch(wg, evs)
 	for w := range wg.watchers {
+		if w.minRev < compactionRev {
+			// skip the watcher that failed to send compacted watch response due to w.ch is full
+			// next retry of syncWatchers would try to resend the compacted watch response to w.ch
+			// TODO prioritize sending compacted watch response over other watch responses with events.
+			continue
+		}
 		w.minRev = curRev + 1
 
 		eb, ok := wb[w]

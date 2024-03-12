@@ -523,18 +523,18 @@ func TestNewMapwatcherToEventMap(t *testing.T) {
 // TestWatchVictims tests that watchable store delivers watch events
 // when the watch channel is temporarily clogged with too many events.
 func TestWatchVictims(t *testing.T) {
-	oldChanBufLen, oldMaxWatchersPerSync := chanBufLen, maxWatchersPerSync
+	oldChanBufLen, oldMaxWatchersPerSync := WatchStreamResponseBufferLen, maxWatchersPerSync
 
 	b, _ := betesting.NewDefaultTmpBackend(t)
 	s := newWatchableStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
 
 	defer func() {
 		cleanup(s, b)
-		chanBufLen, maxWatchersPerSync = oldChanBufLen, oldMaxWatchersPerSync
+		WatchStreamResponseBufferLen, maxWatchersPerSync = oldChanBufLen, oldMaxWatchersPerSync
 	}()
 
-	chanBufLen, maxWatchersPerSync = 1, 2
-	numPuts := chanBufLen * 64
+	WatchStreamResponseBufferLen, maxWatchersPerSync = 1, 2
+	numPuts := WatchStreamResponseBufferLen * 64
 	testKey, testValue := []byte("foo"), []byte("bar")
 
 	var wg sync.WaitGroup

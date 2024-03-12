@@ -449,6 +449,7 @@ func (sws *serverWatchStream) sendLoop() {
 			sws.mu.RUnlock()
 
 			var serr error
+			// gofail: var watchResponseSend struct{}
 			if !fragmented && !ok {
 				serr = sws.gRPCStream.Send(wr)
 			} else {
