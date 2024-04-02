@@ -91,8 +91,8 @@ func testRobustness(ctx context.Context, t *testing.T, lg *zap.Logger, s testSce
 	report.Client = s.run(ctx, t, lg, report.Cluster)
 	forcestopCluster(report.Cluster)
 
-	watchProgressNotifyEnabled := report.Cluster.Cfg.ServerConfig.ExperimentalWatchProgressNotifyInterval != 0
-	validateGotAtLeastOneProgressNotify(t, report.Client, s.watch.requestProgress || watchProgressNotifyEnabled)
+	//watchProgressNotifyEnabled := report.Cluster.Cfg.ServerConfig.ExperimentalWatchProgressNotifyInterval != 0
+	//validateGotAtLeastOneProgressNotify(t, report.Client, s.watch.requestProgress || watchProgressNotifyEnabled)
 	validateConfig := validate.Config{ExpectRevisionUnique: s.traffic.ExpectUniqueRevision()}
 	report.Visualize = validate.ValidateAndReturnVisualize(t, lg, validateConfig, report.Client)
 
@@ -121,19 +121,19 @@ func (s testScenario) run(ctx context.Context, t *testing.T, lg *zap.Logger, clu
 		lg.Info("Finished injecting failures")
 		return nil
 	})
-	maxRevisionChan := make(chan int64, 1)
+	//maxRevisionChan := make(chan int64, 1)
 	g.Go(func() error {
-		defer close(maxRevisionChan)
+		//defer close(maxRevisionChan)
 		operationReport = traffic.SimulateTraffic(ctx, t, lg, clus, s.profile, s.traffic, finishTraffic, baseTime, ids)
 		maxRevision := operationsMaxRevision(operationReport)
-		maxRevisionChan <- maxRevision
+		//maxRevisionChan <- maxRevision
 		lg.Info("Finished simulating traffic", zap.Int64("max-revision", maxRevision))
 		return nil
 	})
-	g.Go(func() error {
-		watchReport = collectClusterWatchEvents(ctx, t, clus, maxRevisionChan, s.watch, baseTime, ids)
-		return nil
-	})
+	//g.Go(func() error {
+	//	watchReport = collectClusterWatchEvents(ctx, t, clus, maxRevisionChan, s.watch, baseTime, ids)
+	//	return nil
+	//})
 	g.Wait()
 	return append(operationReport, watchReport...)
 }

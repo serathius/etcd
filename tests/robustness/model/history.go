@@ -169,6 +169,25 @@ func (h *AppendableHistory) AppendDelete(key string, start, end time.Duration, r
 	})
 }
 
+func (h *AppendableHistory) AppendCompact(rev int64, start, end time.Duration, resp *clientv3.CompactResponse, err error) {
+	request := compactRequest(rev)
+	if err != nil {
+		h.appendFailed(request, start.Nanoseconds(), err)
+		return
+	}
+	var revision int64
+	if resp != nil && resp.Header != nil {
+		revision = resp.Header.Revision
+	}
+	h.appendSuccessful(porcupine.Operation{
+		ClientId: h.streamID,
+		Input:    request,
+		Call:     start.Nanoseconds(),
+		Output:   compactResponse(revision),
+		Return:   end.Nanoseconds(),
+	})
+}
+
 func (h *AppendableHistory) AppendTxn(cmp []clientv3.Cmp, clientOnSuccessOps, clientOnFailure []clientv3.Op, start, end time.Duration, resp *clientv3.TxnResponse, err error) {
 	conds := []EtcdCondition{}
 	for _, cmp := range cmp {
@@ -405,12 +424,20 @@ func putResponse(revision int64) MaybeEtcdResponse {
 	return MaybeEtcdResponse{EtcdResponse: EtcdResponse{Txn: &TxnResponse{Results: []EtcdOperationResult{{}}}, Revision: revision}}
 }
 
+func compactRequest(rev int64) EtcdRequest {
+	return EtcdRequest{Type: Compact, Compact: &CompactRequest{Revision: rev}}
+}
+
 func deleteRequest(key string) EtcdRequest {
 	return EtcdRequest{Type: Txn, Txn: &TxnRequest{OperationsOnSuccess: []EtcdOperation{{Type: DeleteOperation, Delete: DeleteOptions{Key: key}}}}}
 }
 
 func deleteResponse(deleted int64, revision int64) MaybeEtcdResponse {
 	return MaybeEtcdResponse{EtcdResponse: EtcdResponse{Txn: &TxnResponse{Results: []EtcdOperationResult{{Deleted: deleted}}}, Revision: revision}}
+}
+
+func compactResponse(revision int64) MaybeEtcdResponse {
+	return MaybeEtcdResponse{EtcdResponse: EtcdResponse{Compact: &CompactResponse{}, Revision: revision}}
 }
 
 func compareRevisionAndPutRequest(key string, expectedRevision int64, value string) EtcdRequest {

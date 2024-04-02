@@ -17,6 +17,7 @@ package traffic
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -132,6 +133,19 @@ func (c *RecordingClient) Delete(ctx context.Context, key string) (*clientv3.Del
 	resp, err := c.client.Delete(ctx, key)
 	returnTime := time.Since(c.baseTime)
 	c.kvOperations.AppendDelete(key, callTime, returnTime, resp, err)
+	return resp, err
+}
+
+func (c *RecordingClient) Compact(ctx context.Context, rev int64) (*clientv3.CompactResponse, error) {
+	c.kvMux.Lock()
+	defer c.kvMux.Unlock()
+	callTime := time.Since(c.baseTime)
+	fmt.Printf("Compact %d\n", rev)
+	resp, err := c.client.Compact(ctx, rev)
+	returnTime := time.Since(c.baseTime)
+	if err == nil || !strings.Contains(err.Error(), "mvcc: required revision has been compacted") {
+		c.kvOperations.AppendCompact(rev, callTime, returnTime, resp, err)
+	}
 	return resp, err
 }
 

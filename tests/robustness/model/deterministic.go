@@ -64,10 +64,11 @@ var DeterministicModel = porcupine.Model{
 }
 
 type EtcdState struct {
-	Revision  int64
-	KeyValues map[string]ValueRevision
-	KeyLeases map[string]int64
-	Leases    map[int64]EtcdLease
+	Revision        int64
+	CompactRevision int64
+	KeyValues       map[string]ValueRevision
+	KeyLeases       map[string]int64
+	Leases          map[int64]EtcdLease
 }
 
 func (s EtcdState) apply(request EtcdRequest, response EtcdResponse) (bool, EtcdState) {
@@ -178,6 +179,9 @@ func (s EtcdState) Step(request EtcdRequest) (EtcdState, MaybeEtcdResponse) {
 		return s, MaybeEtcdResponse{EtcdResponse: EtcdResponse{Revision: s.Revision, LeaseRevoke: &LeaseRevokeResponse{}}}
 	case Defragment:
 		return s, MaybeEtcdResponse{EtcdResponse: EtcdResponse{Defragment: &DefragmentResponse{}, Revision: s.Revision}}
+	case Compact:
+		s.CompactRevision = request.Compact.Revision
+		return s, MaybeEtcdResponse{EtcdResponse: EtcdResponse{Compact: &CompactResponse{}, Revision: s.Revision}}
 	default:
 		panic(fmt.Sprintf("Unknown request type: %v", request.Type))
 	}
@@ -234,6 +238,7 @@ type RequestType string
 const (
 	Range       RequestType = "range"
 	Txn         RequestType = "txn"
+	Compact     RequestType = "compact"
 	LeaseGrant  RequestType = "leaseGrant"
 	LeaseRevoke RequestType = "leaseRevoke"
 	Defragment  RequestType = "defragment"
@@ -246,6 +251,7 @@ type EtcdRequest struct {
 	Range       *RangeRequest
 	Txn         *TxnRequest
 	Defragment  *DefragmentRequest
+	Compact     *CompactRequest
 }
 
 type RangeRequest struct {
@@ -267,6 +273,13 @@ type PutOptions struct {
 
 type DeleteOptions struct {
 	Key string
+}
+
+type CompactResponse struct {
+}
+
+type CompactRequest struct {
+	Revision int64
 }
 
 type TxnRequest struct {
@@ -322,6 +335,7 @@ type EtcdResponse struct {
 	LeaseGrant  *LeaseGrantReponse
 	LeaseRevoke *LeaseRevokeResponse
 	Defragment  *DefragmentResponse
+	Compact     *CompactResponse
 	Revision    int64
 }
 

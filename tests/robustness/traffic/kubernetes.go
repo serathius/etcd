@@ -36,9 +36,10 @@ var (
 		resource:        "pods",
 		namespace:       "default",
 		writeChoices: []choiceWeight[KubernetesRequestType]{
-			{choice: KubernetesUpdate, weight: 90},
+			{choice: KubernetesUpdate, weight: 89},
 			{choice: KubernetesDelete, weight: 5},
 			{choice: KubernetesCreate, weight: 5},
+			{choice: KubernetesCompact, weight: 1},
 		},
 	}
 )
@@ -166,6 +167,8 @@ func (t kubernetesTraffic) Write(ctx context.Context, kc *kubernetesClient, ids 
 				_, err = kc.OptimisticUpdate(writeCtx, key, fmt.Sprintf("%d", ids.NewRequestID()), rev)
 			case KubernetesCreate:
 				err = kc.OptimisticCreate(writeCtx, t.generateKey(), fmt.Sprintf("%d", ids.NewRequestID()))
+			case KubernetesCompact:
+				err = kc.Compact(writeCtx, rev)
 			default:
 				panic(fmt.Sprintf("invalid choice: %q", op))
 			}
@@ -208,9 +211,10 @@ func (t kubernetesTraffic) generateKey() string {
 type KubernetesRequestType string
 
 const (
-	KubernetesDelete KubernetesRequestType = "delete"
-	KubernetesUpdate KubernetesRequestType = "update"
-	KubernetesCreate KubernetesRequestType = "create"
+	KubernetesDelete  KubernetesRequestType = "delete"
+	KubernetesUpdate  KubernetesRequestType = "update"
+	KubernetesCreate  KubernetesRequestType = "create"
+	KubernetesCompact KubernetesRequestType = "compact"
 )
 
 type kubernetesClient struct {
@@ -242,11 +246,9 @@ func (k kubernetesClient) OptimisticCreate(ctx context.Context, key, value strin
 	return err
 }
 
-func (k kubernetesClient) RequestProgress(ctx context.Context) error {
-	// Kubernetes makes RequestProgress calls by requiring a leader to be
-	// present in the cluster:
-	// https://github.com/kubernetes/kubernetes/blob/2016fab3085562b4132e6d3774b6ded5ba9939fd/staging/src/k8s.io/apiserver/pkg/storage/etcd3/store.go#L87
-	return k.client.RequestProgress(clientv3.WithRequireLeader(ctx))
+func (k kubernetesClient) Compact(ctx context.Context, rev int64) error {
+	_, err := k.client.Compact(ctx, rev)
+	return err
 }
 
 // Kubernetes optimistically assumes that key didn't change since it was last observed, so it executes operations within a transaction conditioned on key not changing.

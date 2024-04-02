@@ -38,7 +38,7 @@ var (
 		Name:                           "LowTraffic",
 		MinimalQPS:                     100,
 		MaximalQPS:                     200,
-		ClientCount:                    8,
+		ClientCount:                    6,
 		MaxNonUniqueRequestConcurrency: 3,
 	}
 	HighTrafficProfile = Profile{

@@ -33,7 +33,7 @@ func describeEtcdResponse(request EtcdRequest, response MaybeEtcdResponse) strin
 		return fmt.Sprintf("%s, rev: %d", describeRangeResponse(request.Range.RangeOptions, *response.Range), response.Revision)
 	case Txn:
 		return fmt.Sprintf("%s, rev: %d", describeTxnResponse(request.Txn, response.Txn), response.Revision)
-	case LeaseGrant, LeaseRevoke, Defragment:
+	case LeaseGrant, LeaseRevoke, Defragment, Compact:
 		if response.Revision == 0 {
 			return "ok"
 		}
@@ -63,6 +63,8 @@ func describeEtcdRequest(request EtcdRequest) string {
 		return fmt.Sprintf("leaseRevoke(%d)", request.LeaseRevoke.LeaseID)
 	case Defragment:
 		return fmt.Sprintf("defragment()")
+	case Compact:
+		return fmt.Sprintf("compact(%d)", request.Compact.Revision)
 	default:
 		return fmt.Sprintf("<! unknown request type: %q !>", request.Type)
 	}
