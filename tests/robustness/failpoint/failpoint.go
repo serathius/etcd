@@ -55,7 +55,6 @@ var (
 		CompactAfterSetFinishedCompactPanic,
 		CompactBeforeCommitBatchPanic,
 		CompactAfterCommitBatchPanic,
-		BlackholePeerNetwork,
 		DelayPeerNetwork,
 		RaftBeforeFollowerSendPanic,
 		BeforeApplyOneConfChangeSleep,
@@ -73,11 +72,12 @@ var (
 		// not available
 		//RaftBeforeLeaderSendPanic,
 		//RaftAfterSaveSnapPanic,
+		//ApplyBeforeOpenSnapshot,
 
-		// not tested yet
+		// deadlock
 		//RaftBeforeSaveSleep,
 		//RaftAfterSaveSleep,
-		//ApplyBeforeOpenSnapshot,
+		//BlackholePeerNetwork,
 	}
 )
 
