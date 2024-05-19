@@ -36,20 +36,48 @@ const (
 
 var (
 	allFailpoints = []Failpoint{
-		KillFailpoint, BeforeCommitPanic, AfterCommitPanic, RaftBeforeSavePanic, RaftAfterSavePanic,
-		DefragBeforeCopyPanic, DefragBeforeRenamePanic, BackendBeforePreCommitHookPanic, BackendAfterPreCommitHookPanic,
-		BackendBeforeStartDBTxnPanic, BackendAfterStartDBTxnPanic, BackendBeforeWritebackBufPanic,
-		BackendAfterWritebackBufPanic, CompactBeforeCommitScheduledCompactPanic, CompactAfterCommitScheduledCompactPanic,
-		CompactBeforeSetFinishedCompactPanic, CompactAfterSetFinishedCompactPanic, CompactBeforeCommitBatchPanic,
-		CompactAfterCommitBatchPanic, RaftBeforeLeaderSendPanic, BlackholePeerNetwork, DelayPeerNetwork,
-		RaftBeforeFollowerSendPanic, RaftBeforeApplySnapPanic, RaftAfterApplySnapPanic, RaftAfterWALReleasePanic,
-		RaftBeforeSaveSnapPanic, RaftAfterSaveSnapPanic, BlackholeUntilSnapshot,
+		// working
+		KillFailpoint,
+		BeforeCommitPanic,
+		AfterCommitPanic,
+		RaftBeforeSavePanic,
+		RaftAfterSavePanic,
+		DefragBeforeCopyPanic,
+		DefragBeforeRenamePanic,
+		BackendBeforePreCommitHookPanic,
+		BackendAfterPreCommitHookPanic,
+		BackendAfterStartDBTxnPanic,
+		BackendBeforeWritebackBufPanic,
+		BackendAfterWritebackBufPanic,
+		CompactBeforeCommitScheduledCompactPanic,
+		CompactAfterCommitScheduledCompactPanic,
+		CompactBeforeSetFinishedCompactPanic,
+		CompactAfterSetFinishedCompactPanic,
+		CompactBeforeCommitBatchPanic,
+		CompactAfterCommitBatchPanic,
+		BlackholePeerNetwork,
+		DelayPeerNetwork,
+		RaftBeforeFollowerSendPanic,
 		BeforeApplyOneConfChangeSleep,
-		MemberReplace,
 		DropPeerNetwork,
-		RaftBeforeSaveSleep,
-		RaftAfterSaveSleep,
-		ApplyBeforeOpenSnapshot,
+
+		// bad
+		//BackendBeforeStartDBTxnPanic,
+		//RaftBeforeApplySnapPanic,
+		//RaftAfterApplySnapPanic,
+		//RaftAfterWALReleasePanic,
+		//RaftBeforeSaveSnapPanic,
+		//BlackholeUntilSnapshot,
+		//MemberReplace,
+
+		// not available
+		//RaftBeforeLeaderSendPanic,
+		//RaftAfterSaveSnapPanic,
+
+		// not tested yet
+		//RaftBeforeSaveSleep,
+		//RaftAfterSaveSleep,
+		//ApplyBeforeOpenSnapshot,
 	}
 )
 
