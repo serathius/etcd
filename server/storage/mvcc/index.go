@@ -17,7 +17,7 @@ package mvcc
 import (
 	"bytes"
 	"fmt"
-	"github.com/VictorLowther/ibtree"
+	"github.com/google/btree"
 	"go.uber.org/zap"
 )
 
@@ -34,7 +34,7 @@ type index interface {
 
 type treeIndex struct {
 	baseRev      int64
-	revisionTree []*ibtree.Tree[keyRev]
+	revisionTree []*btree.BTreeG[keyRev]
 	lg           *zap.Logger
 }
 
@@ -44,30 +44,12 @@ type keyRev struct {
 	version      int64
 }
 
-var lessThen ibtree.LessThan[keyRev] = func(k keyRev, k2 keyRev) bool {
+var lessThen btree.LessFunc[keyRev] = func(k keyRev, k2 keyRev) bool {
 	return compare(k, k2) == -1
 }
 
 func compare(k keyRev, k2 keyRev) int {
 	return bytes.Compare(k.key, k2.key)
-}
-
-func compareKey(k []byte) ibtree.CompareAgainst[keyRev] {
-	return func(k2 keyRev) int {
-		return bytes.Compare(k2.key, k)
-	}
-}
-
-func lessThanKey(k []byte) ibtree.Test[keyRev] {
-	return func(k2 keyRev) bool {
-		return bytes.Compare(k2.key, k) < 0
-	}
-}
-
-func greaterThanEqualKey(k []byte) ibtree.Test[keyRev] {
-	return func(k2 keyRev) bool {
-		return bytes.Compare(k2.key, k) >= 0
-	}
 }
 
 func newTreeIndex(lg *zap.Logger) *treeIndex {
@@ -80,27 +62,29 @@ func newTreeIndex(lg *zap.Logger) *treeIndex {
 func (ti *treeIndex) Put(key []byte, rev Revision) {
 	if ti.baseRev == -1 {
 		ti.baseRev = rev.Main - 1
-		ti.revisionTree = []*ibtree.Tree[keyRev]{
-			ibtree.New[keyRev](lessThen),
+		ti.revisionTree = []*btree.BTreeG[keyRev]{
+			btree.NewG[keyRev](8, lessThen),
 		}
 	}
 	if rev.Main != ti.rev()+1 {
 		panic(fmt.Sprintf("append only, lastRev: %d, putRev: %d", ti.rev(), rev.Main))
 	}
 	prevTree := ti.revisionTree[len(ti.revisionTree)-1]
-	item, found := prevTree.Get(compareKey(key))
+	item, found := prevTree.Get(keyRev{key: key})
 	created := rev
 	var version int64 = 1
 	if found {
 		created = item.created
 		version = item.version + 1
 	}
-	ti.revisionTree = append(ti.revisionTree, prevTree.Insert(keyRev{
+	newTree := prevTree.Clone()
+	newTree.ReplaceOrInsert(keyRev{
 		key:     key,
 		mod:     rev,
 		created: created,
 		version: version,
-	}))
+	})
+	ti.revisionTree = append(ti.revisionTree, newTree)
 }
 
 func (ti *treeIndex) rev() int64 {
@@ -113,8 +97,7 @@ func (ti *treeIndex) Get(key []byte, atRev int64) (modified, created Revision, v
 		return Revision{}, Revision{}, 0, ErrRevisionNotFound
 	}
 	tree := ti.revisionTree[idx]
-
-	keyRev, found := tree.Get(compareKey(key))
+	keyRev, found := tree.Get(keyRev{key: key})
 	if !found {
 		return Revision{}, Revision{}, 0, ErrRevisionNotFound
 	}
@@ -134,7 +117,7 @@ func (ti *treeIndex) Revisions(key, end []byte, atRev int64, limit int) (revs []
 	}
 	idx := atRev - ti.baseRev
 	tree := ti.revisionTree[idx]
-	tree.Range(lessThanKey(key), greaterThanEqualKey(end), func(kr keyRev) bool {
+	tree.AscendRange(keyRev{key: key}, keyRev{key: end}, func(kr keyRev) bool {
 		if limit <= 0 || len(revs) < limit {
 			revs = append(revs, kr.mod)
 		}
@@ -157,7 +140,7 @@ func (ti *treeIndex) CountRevisions(key, end []byte, atRev int64) int {
 	idx := atRev - ti.baseRev
 	tree := ti.revisionTree[idx]
 	total := 0
-	tree.Range(lessThanKey(key), greaterThanEqualKey(end), func(kr keyRev) bool {
+	tree.AscendRange(keyRev{key: key}, keyRev{key: end}, func(kr keyRev) bool {
 		total++
 		return true
 	})
@@ -174,7 +157,7 @@ func (ti *treeIndex) Range(key, end []byte, atRev int64) (keys [][]byte, revs []
 	}
 	idx := atRev - ti.baseRev
 	tree := ti.revisionTree[idx]
-	tree.Range(lessThanKey(key), greaterThanEqualKey(end), func(kr keyRev) bool {
+	tree.AscendRange(keyRev{key: key}, keyRev{key: end}, func(kr keyRev) bool {
 		revs = append(revs, kr.mod)
 		keys = append(keys, kr.key)
 		return true
@@ -187,13 +170,14 @@ func (ti *treeIndex) Tombstone(key []byte, rev Revision) error {
 		panic(fmt.Sprintf("append only, lastRev: %d, putRev: %d", ti.rev(), rev.Main))
 	}
 	prevTree := ti.revisionTree[len(ti.revisionTree)-1]
-	newTree, _, found := prevTree.Delete(keyRev{
+	newTree := prevTree.Clone()
+	_, found := newTree.Delete(keyRev{
 		key: key,
 	})
+	ti.revisionTree = append(ti.revisionTree, newTree)
 	if !found {
 		return ErrRevisionNotFound
 	}
-	ti.revisionTree = append(ti.revisionTree, newTree)
 	return nil
 }
 
@@ -211,9 +195,9 @@ func (ti *treeIndex) Keep(rev int64) map[Revision]struct{} {
 	available := make(map[Revision]struct{})
 	idx := rev - ti.baseRev
 	tree := ti.revisionTree[idx]
-	for it := tree.All(); it.Next(); {
-		keyRev := it.Item()
-		available[keyRev.mod] = struct{}{}
-	}
+	tree.Ascend(func(item keyRev) bool {
+		available[item.mod] = struct{}{}
+		return true
+	})
 	return available
 }
