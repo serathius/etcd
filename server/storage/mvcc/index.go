@@ -30,7 +30,6 @@ type index interface {
 	Tombstone(key []byte, rev Revision) error
 	Compact(rev int64) map[Revision]struct{}
 	Keep(rev int64) map[Revision]struct{}
-	Equal(b index) bool
 
 	Insert(ki *keyIndex)
 	KeyIndex(ki *keyIndex) *keyIndex
@@ -42,7 +41,7 @@ type treeIndex struct {
 	lg   *zap.Logger
 }
 
-func newTreeIndex(lg *zap.Logger) index {
+func newTreeIndex(lg *zap.Logger) *treeIndex {
 	return &treeIndex{
 		tree: btree.NewG(32, func(aki *keyIndex, bki *keyIndex) bool {
 			return aki.Less(bki)
