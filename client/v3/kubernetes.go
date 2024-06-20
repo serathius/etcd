@@ -2,6 +2,7 @@ package clientv3
 
 import (
 	"context"
+	"fmt"
 
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
@@ -17,7 +18,7 @@ type Kubernetes interface {
 	Count(ctx context.Context, prefix string) (int64, error)
 	OptimisticPut(ctx context.Context, key string, value []byte, opts PutOptions) (KubernetesPutResponse, error)
 	OptimisticDelete(ctx context.Context, key string, opts DeleteOptions) (KubernetesDeleteResponse, error)
-	Watch(ctx context.Context, key string, opts WatchOptions) WatchChan
+	Watch(ctx context.Context, key string, opts WatchOptions) KubernetesWatchChan
 	RequestProgress(ctx context.Context, opts RequestProgressOptions) error
 }
 
@@ -75,10 +76,33 @@ type KubernetesDeleteResponse struct {
 	Revision  int64
 }
 
+type KubernetesWatchChan <-chan KubernetesWatchEvent
+
+type KubernetesEventType string
+
+const (
+	Added    KubernetesEventType = "ADDED"
+	Modified KubernetesEventType = "MODIFIED"
+	Deleted  KubernetesEventType = "DELETED"
+	Bookmark KubernetesEventType = "BOOKMARK"
+	Error    KubernetesEventType = "ERROR"
+)
+
+type KubernetesWatchEvent struct {
+	Type KubernetesEventType
+
+	Error error
+	Revision int64
+	Key string
+	Value []byte
+	PreviousValue []byte
+}
+
 type kubernetes struct {
 	kv      pb.KVClient
 	watcher *watcher
 }
+
 
 func (k kubernetes) Get(ctx context.Context, key string, opts GetOptions) (resp KubernetesGetResponse, err error) {
 	rangeResp, err := k.kv.Range(ctx, &pb.RangeRequest{
@@ -179,7 +203,8 @@ func kvFromTxnResponse(resp *pb.ResponseOp) *mvccpb.KeyValue {
 	return nil
 }
 
-func (k kubernetes) Watch(ctx context.Context, key string, opts WatchOptions) WatchChan {
+func (k kubernetes) Watch(ctx context.Context, key string, opts WatchOptions) KubernetesWatchChan {
+	ctx, cancel := context.WithCancel(ctx)
 	ctx = WithRequireLeader(ctx)
 	if opts.StreamKey == "" {
 		opts.StreamKey = streamKeyFromCtx(ctx)
@@ -194,7 +219,80 @@ func (k kubernetes) Watch(ctx context.Context, key string, opts WatchOptions) Wa
 		prevKV:         true,
 		retc:           make(chan chan WatchResponse, 1),
 	}
-	return k.watcher.watch(ctx, opts.StreamKey, wr)
+	ch :=  k.watcher.watch(ctx, opts.StreamKey, wr)
+
+	Kch := make(chan KubernetesWatchEvent, 1)
+	go func() {
+		for resp := range ch {
+				if resp.Err() != nil {
+						event := KubernetesWatchEvent{
+							Type: Error,
+							Error: resp.Err(),
+						}
+						select {
+						  case Kch <- event:
+							case <-ctx.Done():
+						}
+						continue
+					}
+					if resp.IsProgressNotify() {
+						event := KubernetesWatchEvent{
+							Type: Bookmark,
+							Revision: resp.Header.GetRevision(),
+						}
+						select {
+							case Kch <- event:
+							case <-ctx.Done():
+						}
+						continue
+					}
+					for _, e := range resp.Events {
+						parsedEvent, err := parseEvent(e)
+						if err != nil {
+							event := KubernetesWatchEvent{
+								Type: Error,
+								Error: err,
+							}
+							cancel()
+							select {
+								case Kch <- event:
+								case <-ctx.Done():
+							}
+						  break
+						}
+						select {
+						case Kch <- *parsedEvent:
+						case <-ctx.Done():
+						}
+					}
+			}
+			close(Kch)
+	}()
+	return Kch
+}
+
+func parseEvent(e *Event) (*KubernetesWatchEvent, error) {
+	if !e.IsCreate() && e.PrevKv == nil {
+		// If the previous value is nil, error. One example of how this is possible is if the previous value has been compacted already.
+			return nil, fmt.Errorf("etcd event received with PrevKv=nil (key=%q, modRevision=%d, type=%s)", string(e.Kv.Key), e.Kv.ModRevision, e.Type.String())
+	}
+	ret := &KubernetesWatchEvent{
+		Key:       string(e.Kv.Key),
+		Value:     e.Kv.Value,
+		Revision:  e.Kv.ModRevision,
+	}
+	if e.PrevKv != nil {
+		ret.PreviousValue = e.PrevKv.Value
+	}
+	switch {
+	case e.Type == EventTypeDelete:
+		ret.Type = Deleted
+	case e.IsCreate():
+		ret.Type = Added
+	default:
+		ret.Type = Modified
+	}
+	return ret, nil
 }
 
 func (k kubernetes) RequestProgress(ctx context.Context, opts RequestProgressOptions) error {
