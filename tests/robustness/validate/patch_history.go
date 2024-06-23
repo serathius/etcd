@@ -26,9 +26,10 @@ import (
 func patchLinearizableOperations(reports []report.ClientReport, persistedRequests []model.EtcdRequest) []porcupine.Operation {
 	allOperations := relevantOperations(reports)
 	watchRevision := requestRevision(reports)
+	clientRequestsCount := countClientRequests(reports)
 	returnTime := returnTime(allOperations, reports, persistedRequests)
 	persistedRequestsCount := countPersistedRequests(persistedRequests)
-	return patchOperations(allOperations, watchRevision, returnTime, persistedRequestsCount)
+	return patchOperations(allOperations, clientRequestsCount, watchRevision, returnTime, persistedRequestsCount)
 }
 
 func relevantOperations(reports []report.ClientReport) []porcupine.Operation {
@@ -46,7 +47,7 @@ func relevantOperations(reports []report.ClientReport) []porcupine.Operation {
 	return ops
 }
 
-func patchOperations(operations []porcupine.Operation, watchRevision, returnTime, persistedRequestCount map[keyValue]int64) []porcupine.Operation {
+func patchOperations(operations []porcupine.Operation, clientRequestCount, watchRevision, returnTime, persistedRequestCount map[keyValue]int64) []porcupine.Operation {
 	newOperations := make([]porcupine.Operation, 0, len(operations))
 
 	for _, op := range operations {
@@ -63,14 +64,16 @@ func patchOperations(operations []porcupine.Operation, watchRevision, returnTime
 			switch operation.Type {
 			case model.PutOperation:
 				kv := keyValue{Key: operation.Put.Key, Value: operation.Put.Value}
-				revision, ok := watchRevision[kv]
-				if ok {
-					txnRevision = revision
+				if count := clientRequestCount[kv]; count == 1 {
+					revision, ok := watchRevision[kv]
+					if ok {
+						txnRevision = revision
+					}
+					if t, ok := returnTime[kv]; ok && t < op.Return {
+						op.Return = t
+					}
 				}
-				if t, ok := returnTime[kv]; ok && t < op.Return {
-					op.Return = t
-				}
-				_, ok = persistedRequestCount[kv]
+				_, ok := persistedRequestCount[kv]
 				if ok {
 					txnPersisted = true
 				}
@@ -194,6 +197,17 @@ func returnTime(allOperations []porcupine.Operation, reports []report.ClientRepo
 		}
 	}
 	return earliestReturnTime
+}
+
+func countClientRequests(reports []report.ClientReport) map[keyValue]int64 {
+	counter := map[keyValue]int64{}
+	for _, client := range reports {
+		for _, op := range client.KeyValue {
+			request := op.Input.(model.EtcdRequest)
+			countRequest(counter, request)
+		}
+	}
+	return counter
 }
 
 func countPersistedRequests(requests []model.EtcdRequest) map[keyValue]int64 {
