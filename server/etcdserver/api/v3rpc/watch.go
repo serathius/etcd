@@ -17,6 +17,7 @@ package v3rpc
 import (
 	"context"
 	"errors"
+	"go.etcd.io/etcd/server/v3/config"
 	"io"
 	"math/rand"
 	"sync"
@@ -52,30 +53,34 @@ type watchServer struct {
 
 // NewWatchServer returns a new watch server.
 func NewWatchServer(s *etcdserver.EtcdServer) pb.WatchServer {
+	return newWatchServer(s.Logger(), int64(s.Cluster().ID()), int64(s.MemberID()), s.Cfg, s, s.Watchable(), s)
+}
+
+func newWatchServer(lg *zap.Logger, clusterID, memberID int64, cfg config.ServerConfig, sg apply.RaftStatusGetter, watchable mvcc.WatchableKV, ag AuthGetter) pb.WatchServer {
 	srv := &watchServer{
-		lg: s.Cfg.Logger,
+		lg: lg,
 
-		clusterID: int64(s.Cluster().ID()),
-		memberID:  int64(s.MemberID()),
+		clusterID: clusterID,
+		memberID:  memberID,
 
-		maxRequestBytes: int(s.Cfg.MaxRequestBytes + grpcOverheadBytes),
+		maxRequestBytes: int(cfg.MaxRequestBytes + grpcOverheadBytes),
 
-		sg:        s,
-		watchable: s.Watchable(),
-		ag:        s,
+		sg:        sg,
+		watchable: watchable,
+		ag:        ag,
 	}
 	if srv.lg == nil {
 		srv.lg = zap.NewNop()
 	}
-	if s.Cfg.WatchProgressNotifyInterval > 0 {
-		if s.Cfg.WatchProgressNotifyInterval < minWatchProgressInterval {
+	if cfg.WatchProgressNotifyInterval > 0 {
+		if cfg.WatchProgressNotifyInterval < minWatchProgressInterval {
 			srv.lg.Warn(
 				"adjusting watch progress notify interval to minimum period",
 				zap.Duration("min-watch-progress-notify-interval", minWatchProgressInterval),
 			)
-			s.Cfg.WatchProgressNotifyInterval = minWatchProgressInterval
+			cfg.WatchProgressNotifyInterval = minWatchProgressInterval
 		}
-		SetProgressReportInterval(s.Cfg.WatchProgressNotifyInterval)
+		SetProgressReportInterval(cfg.WatchProgressNotifyInterval)
 	}
 	return srv
 }
@@ -347,10 +352,14 @@ func (sws *serverWatchStream) recvLoop() error {
 				id := uv.CancelRequest.WatchId
 				err := sws.watchStream.Cancel(mvcc.WatchID(id))
 				if err == nil {
-					sws.ctrlStream <- &pb.WatchResponse{
+					select {
+					case sws.ctrlStream <- &pb.WatchResponse{
 						Header:   sws.newResponseHeader(sws.watchStream.Rev()),
 						WatchId:  id,
 						Canceled: true,
+					}:
+					case <-sws.closec:
+						return nil
 					}
 					sws.mu.Lock()
 					delete(sws.progress, mvcc.WatchID(id))
