@@ -63,11 +63,7 @@ func (r *EtcdReplay) EventsForWatch(watch WatchRequest) (events []PersistedEvent
 	return events
 }
 
-func toWatchEvents(prevState *EtcdState, request EtcdRequest, response MaybeEtcdResponse) (events []PersistedEvent) {
-	if response.Error != "" {
-		return events
-	}
-
+func toWatchEvents(prevState *EtcdState, request EtcdRequest, response EtcdResponse) (events []PersistedEvent) {
 	switch request.Type {
 	case Txn:
 		var ops []EtcdOperation

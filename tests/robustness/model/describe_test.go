@@ -31,32 +31,32 @@ func TestModelDescribe(t *testing.T) {
 	}{
 		{
 			req:            getRequest("key1"),
-			resp:           emptyGetResponse(1),
+			resp:           maybeResponse(emptyGetResponse(1)),
 			expectDescribe: `get("key1") -> nil, rev: 1`,
 		},
 		{
 			req:            getRequest("key2"),
-			resp:           getResponse("key", "2", 2, 2),
+			resp:           maybeResponse(getResponse("key", "2", 2, 2)),
 			expectDescribe: `get("key2") -> "2", rev: 2`,
 		},
 		{
 			req:            getRequest("key2b"),
-			resp:           getResponse("key2b", "01234567890123456789", 2, 2),
+			resp:           maybeResponse(getResponse("key2b", "01234567890123456789", 2, 2)),
 			expectDescribe: `get("key2b") -> hash: 2945867837, rev: 2`,
 		},
 		{
 			req:            putRequest("key3", "3"),
-			resp:           putResponse(3),
+			resp:           maybeResponse(putResponse(3)),
 			expectDescribe: `put("key3", "3") -> ok, rev: 3`,
 		},
 		{
 			req:            putWithLeaseRequest("key3b", "3b", 3),
-			resp:           putResponse(3),
+			resp:           maybeResponse(putResponse(3)),
 			expectDescribe: `put("key3b", "3b", 3) -> ok, rev: 3`,
 		},
 		{
 			req:            putRequest("key3c", "01234567890123456789"),
-			resp:           putResponse(3),
+			resp:           maybeResponse(putResponse(3)),
 			expectDescribe: `put("key3c", hash: 2945867837) -> ok, rev: 3`,
 		},
 		{
@@ -71,7 +71,7 @@ func TestModelDescribe(t *testing.T) {
 		},
 		{
 			req:            deleteRequest("key5"),
-			resp:           deleteResponse(1, 5),
+			resp:           maybeResponse(deleteResponse(1, 5)),
 			expectDescribe: `delete("key5") -> deleted: 1, rev: 5`,
 		},
 		{
@@ -81,17 +81,17 @@ func TestModelDescribe(t *testing.T) {
 		},
 		{
 			req:            compareRevisionAndPutRequest("key7", 7, "77"),
-			resp:           txnEmptyResponse(false, 7),
+			resp:           maybeResponse(txnEmptyResponse(false, 7)),
 			expectDescribe: `guaranteedUpdate("key7", "77", mod_rev=7) -> failure(), rev: 7`,
 		},
 		{
 			req:            compareRevisionAndPutRequest("key8", 8, "88"),
-			resp:           txnPutResponse(true, 8),
+			resp:           maybeResponse(txnPutResponse(true, 8)),
 			expectDescribe: `guaranteedUpdate("key8", "88", mod_rev=8) -> success(ok), rev: 8`,
 		},
 		{
 			req:            compareRevisionAndPutRequest("key8", 0, "89"),
-			resp:           txnPutResponse(true, 8),
+			resp:           maybeResponse(txnPutResponse(true, 8)),
 			expectDescribe: `guaranteedCreate("key8", "89") -> success(ok), rev: 8`,
 		},
 		{
@@ -101,72 +101,72 @@ func TestModelDescribe(t *testing.T) {
 		},
 		{
 			req:            txnRequest([]EtcdCondition{{Key: "key9b", ExpectedRevision: 9}}, []EtcdOperation{{Type: PutOperation, Put: PutOptions{Key: "key9b", Value: ValueOrHash{Value: "991"}}}}, []EtcdOperation{{Type: RangeOperation, Range: RangeRequest{Start: "key9b"}}}),
-			resp:           txnResponse([]EtcdOperationResult{{}}, true, 10),
+			resp:           maybeResponse(txnResponse([]EtcdOperationResult{{}}, true, 10)),
 			expectDescribe: `guaranteedUpdate("key9b", "991", mod_rev=9) -> success(ok), rev: 10`,
 		},
 		{
 			req:            txnRequest([]EtcdCondition{{Key: "key9c", ExpectedRevision: 9}}, []EtcdOperation{{Type: PutOperation, Put: PutOptions{Key: "key9c", Value: ValueOrHash{Value: "992"}}}}, []EtcdOperation{{Type: RangeOperation, Range: RangeRequest{Start: "key9c"}}}),
-			resp:           txnResponse([]EtcdOperationResult{{RangeResponse: RangeResponse{KVs: []KeyValue{{Key: "key9c", ValueRevision: ValueRevision{Value: ValueOrHash{Value: "993"}, ModRevision: 10}}}}}}, false, 10),
+			resp:           maybeResponse(txnResponse([]EtcdOperationResult{{RangeResponse: RangeResponse{KVs: []KeyValue{{Key: "key9c", ValueRevision: ValueRevision{Value: ValueOrHash{Value: "993"}, ModRevision: 10}}}}}}, false, 10)),
 			expectDescribe: `guaranteedUpdate("key9c", "992", mod_rev=9) -> failure("993"), rev: 10`,
 		},
 		{
 			req:            txnRequest(nil, []EtcdOperation{{Type: RangeOperation, Range: RangeRequest{Start: "10"}}, {Type: PutOperation, Put: PutOptions{Key: "11", Value: ValueOrHash{Value: "111"}}}, {Type: DeleteOperation, Delete: DeleteOptions{Key: "12"}}}, nil),
-			resp:           txnResponse([]EtcdOperationResult{{RangeResponse: RangeResponse{KVs: []KeyValue{{ValueRevision: ValueRevision{Value: ValueOrHash{Value: "110"}}}}}}, {}, {Deleted: 1}}, true, 10),
+			resp:           maybeResponse(txnResponse([]EtcdOperationResult{{RangeResponse: RangeResponse{KVs: []KeyValue{{ValueRevision: ValueRevision{Value: ValueOrHash{Value: "110"}}}}}}, {}, {Deleted: 1}}, true, 10)),
 			expectDescribe: `get("10"), put("11", "111"), delete("12") -> "110", ok, deleted: 1, rev: 10`,
 		},
 		{
 			req:            txnRequest([]EtcdCondition{{Key: "key11", ExpectedRevision: 11}}, []EtcdOperation{{Type: PutOperation, Put: PutOptions{Key: "key11", Value: ValueOrHash{Value: "11"}}}}, []EtcdOperation{{Type: RangeOperation, Range: RangeRequest{Start: "key12"}}}),
-			resp:           txnResponse([]EtcdOperationResult{{}}, true, 11),
+			resp:           maybeResponse(txnResponse([]EtcdOperationResult{{}}, true, 11)),
 			expectDescribe: `if(mod_rev(key11)==11).then(put("key11", "11")).else(get("key12")) -> success(ok), rev: 11`,
 		},
 		{
 			req:            txnRequest([]EtcdCondition{{Key: "key11", ExpectedRevision: 11}}, []EtcdOperation{{Type: PutOperation, Put: PutOptions{Key: "key12", Value: ValueOrHash{Value: "11"}}}}, nil),
-			resp:           txnResponse([]EtcdOperationResult{{}}, true, 11),
+			resp:           maybeResponse(txnResponse([]EtcdOperationResult{{}}, true, 11)),
 			expectDescribe: `if(mod_rev(key11)==11).then(put("key12", "11")) -> success(ok), rev: 11`,
 		},
 		{
 			req:            defragmentRequest(),
-			resp:           defragmentResponse(10),
+			resp:           maybeResponse(defragmentResponse(10)),
 			expectDescribe: `defragment() -> ok, rev: 10`,
 		},
 		{
 			req:            listRequest("key11", 0),
-			resp:           rangeResponse(nil, 0, 11),
+			resp:           maybeResponse(rangeResponse(nil, 0, 11)),
 			expectDescribe: `list("key11") -> [], count: 0, rev: 11`,
 		},
 		{
 			req:            listRequest("key12", 0),
-			resp:           rangeResponse([]*mvccpb.KeyValue{{Value: []byte("12")}}, 2, 12),
+			resp:           maybeResponse(rangeResponse([]*mvccpb.KeyValue{{Value: []byte("12")}}, 2, 12)),
 			expectDescribe: `list("key12") -> ["12"], count: 2, rev: 12`,
 		},
 		{
 			req:            listRequest("key13", 0),
-			resp:           rangeResponse([]*mvccpb.KeyValue{{Value: []byte("01234567890123456789")}}, 1, 13),
+			resp:           maybeResponse(rangeResponse([]*mvccpb.KeyValue{{Value: []byte("01234567890123456789")}}, 1, 13)),
 			expectDescribe: `list("key13") -> [hash: 2945867837], count: 1, rev: 13`,
 		},
 		{
 			req:            listRequest("key14", 14),
-			resp:           rangeResponse(nil, 0, 14),
+			resp:           maybeResponse(rangeResponse(nil, 0, 14)),
 			expectDescribe: `list("key14", limit=14) -> [], count: 0, rev: 14`,
 		},
 		{
 			req:            staleListRequest("key15", 0, 15),
-			resp:           rangeResponse(nil, 0, 15),
+			resp:           maybeResponse(rangeResponse(nil, 0, 15)),
 			expectDescribe: `list("key15", rev=15) -> [], count: 0, rev: 15`,
 		},
 		{
 			req:            staleListRequest("key15", 2, 15),
-			resp:           rangeResponse(nil, 0, 15),
+			resp:           maybeResponse(rangeResponse(nil, 0, 15)),
 			expectDescribe: `list("key15", rev=15, limit=2) -> [], count: 0, rev: 15`,
 		},
 		{
 			req:            rangeRequest("key16", "key16b", 0),
-			resp:           rangeResponse(nil, 0, 16),
+			resp:           maybeResponse(rangeResponse(nil, 0, 16)),
 			expectDescribe: `range("key16".."key16b") -> [], count: 0, rev: 16`,
 		},
 		{
 			req:            rangeRequest("key16", "key16b", 2),
-			resp:           rangeResponse(nil, 0, 16),
+			resp:           maybeResponse(rangeResponse(nil, 0, 16)),
 			expectDescribe: `range("key16".."key16b", limit=2) -> [], count: 0, rev: 16`,
 		},
 	}

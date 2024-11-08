@@ -168,12 +168,12 @@ func (h *AppendableHistory) AppendTxn(cmp []clientv3.Cmp, clientOnSuccessOps, cl
 	h.appendSuccessful(request, start, end, txnResponse(results, resp.Succeeded, revision))
 }
 
-func (h *AppendableHistory) appendSuccessful(request EtcdRequest, start, end time.Duration, response MaybeEtcdResponse) {
+func (h *AppendableHistory) appendSuccessful(request EtcdRequest, start, end time.Duration, response EtcdResponse) {
 	op := porcupine.Operation{
 		ClientId: h.streamID,
 		Input:    request,
 		Call:     start.Nanoseconds(),
-		Output:   response,
+		Output:   MaybeEtcdResponse{EtcdResponse: response},
 		Return:   end.Nanoseconds(),
 	}
 	h.append(op)
@@ -265,9 +265,7 @@ func (h *AppendableHistory) AppendCompact(rev int64, start, end time.Duration, r
 	request := compactRequest(rev)
 	if err != nil {
 		if strings.Contains(err.Error(), mvcc.ErrCompacted.Error()) {
-			h.appendSuccessful(request, start, end, MaybeEtcdResponse{
-				EtcdResponse: EtcdResponse{ClientError: mvcc.ErrCompacted.Error()},
-			})
+			h.appendSuccessful(request, start, end, EtcdResponse{ClientError: mvcc.ErrCompacted.Error()})
 			return
 		}
 		h.appendFailed(request, start, end, err)
@@ -339,15 +337,15 @@ func staleRangeRequest(start, end string, limit, revision int64) EtcdRequest {
 	return EtcdRequest{Type: Range, Range: &RangeRequest{Start: start, End: end, Limit: limit, Revision: revision}}
 }
 
-func emptyGetResponse(revision int64) MaybeEtcdResponse {
+func emptyGetResponse(revision int64) EtcdResponse {
 	return rangeResponse([]*mvccpb.KeyValue{}, 0, revision)
 }
 
-func getResponse(key, value string, modRevision, revision int64) MaybeEtcdResponse {
+func getResponse(key, value string, modRevision, revision int64) EtcdResponse {
 	return rangeResponse([]*mvccpb.KeyValue{{Key: []byte(key), Value: []byte(value), ModRevision: modRevision}}, 1, revision)
 }
 
-func rangeResponse(kvs []*mvccpb.KeyValue, count int64, revision int64) MaybeEtcdResponse {
+func rangeResponse(kvs []*mvccpb.KeyValue, count int64, revision int64) EtcdResponse {
 	result := RangeResponse{KVs: make([]KeyValue, len(kvs)), Count: count}
 
 	for i, kv := range kvs {
@@ -359,7 +357,7 @@ func rangeResponse(kvs []*mvccpb.KeyValue, count int64, revision int64) MaybeEtc
 			},
 		}
 	}
-	return MaybeEtcdResponse{EtcdResponse: EtcdResponse{Range: &result, Revision: revision}}
+	return EtcdResponse{Range: &result, Revision: revision}
 }
 
 func failedResponse(err error) MaybeEtcdResponse {
@@ -374,23 +372,23 @@ func putRequest(key, value string) EtcdRequest {
 	return EtcdRequest{Type: Txn, Txn: &TxnRequest{OperationsOnSuccess: []EtcdOperation{{Type: PutOperation, Put: PutOptions{Key: key, Value: ToValueOrHash(value)}}}}}
 }
 
-func putResponse(revision int64) MaybeEtcdResponse {
-	return MaybeEtcdResponse{EtcdResponse: EtcdResponse{Txn: &TxnResponse{Results: []EtcdOperationResult{{}}}, Revision: revision}}
+func putResponse(revision int64) EtcdResponse {
+	return EtcdResponse{Txn: &TxnResponse{Results: []EtcdOperationResult{{}}}, Revision: revision}
 }
 
 func deleteRequest(key string) EtcdRequest {
 	return EtcdRequest{Type: Txn, Txn: &TxnRequest{OperationsOnSuccess: []EtcdOperation{{Type: DeleteOperation, Delete: DeleteOptions{Key: key}}}}}
 }
 
-func deleteResponse(deleted int64, revision int64) MaybeEtcdResponse {
-	return MaybeEtcdResponse{EtcdResponse: EtcdResponse{Txn: &TxnResponse{Results: []EtcdOperationResult{{Deleted: deleted}}}, Revision: revision}}
+func deleteResponse(deleted int64, revision int64) EtcdResponse {
+	return EtcdResponse{Txn: &TxnResponse{Results: []EtcdOperationResult{{Deleted: deleted}}}, Revision: revision}
 }
 
 func compareRevisionAndPutRequest(key string, expectedRevision int64, value string) EtcdRequest {
 	return txnRequestSingleOperation(compareRevision(key, expectedRevision), putOperation(key, value), nil)
 }
 
-func compareRevisionAndPutResponse(succeeded bool, revision int64) MaybeEtcdResponse {
+func compareRevisionAndPutResponse(succeeded bool, revision int64) EtcdResponse {
 	if succeeded {
 		return txnPutResponse(succeeded, revision)
 	}
@@ -425,16 +423,16 @@ func txnRequest(conds []EtcdCondition, onSuccess, onFailure []EtcdOperation) Etc
 	return EtcdRequest{Type: Txn, Txn: &TxnRequest{Conditions: conds, OperationsOnSuccess: onSuccess, OperationsOnFailure: onFailure}}
 }
 
-func txnPutResponse(succeeded bool, revision int64) MaybeEtcdResponse {
+func txnPutResponse(succeeded bool, revision int64) EtcdResponse {
 	return txnResponse([]EtcdOperationResult{{}}, succeeded, revision)
 }
 
-func txnEmptyResponse(succeeded bool, revision int64) MaybeEtcdResponse {
+func txnEmptyResponse(succeeded bool, revision int64) EtcdResponse {
 	return txnResponse([]EtcdOperationResult{}, succeeded, revision)
 }
 
-func txnResponse(result []EtcdOperationResult, succeeded bool, revision int64) MaybeEtcdResponse {
-	return MaybeEtcdResponse{EtcdResponse: EtcdResponse{Txn: &TxnResponse{Results: result, Failure: !succeeded}, Revision: revision}}
+func txnResponse(result []EtcdOperationResult, succeeded bool, revision int64) EtcdResponse {
+	return EtcdResponse{Txn: &TxnResponse{Results: result, Failure: !succeeded}, Revision: revision}
 }
 
 func putWithLeaseRequest(key, value string, leaseID int64) EtcdRequest {
@@ -445,32 +443,32 @@ func leaseGrantRequest(leaseID int64) EtcdRequest {
 	return EtcdRequest{Type: LeaseGrant, LeaseGrant: &LeaseGrantRequest{LeaseID: leaseID}}
 }
 
-func leaseGrantResponse(revision int64) MaybeEtcdResponse {
-	return MaybeEtcdResponse{EtcdResponse: EtcdResponse{LeaseGrant: &LeaseGrantReponse{}, Revision: revision}}
+func leaseGrantResponse(revision int64) EtcdResponse {
+	return EtcdResponse{LeaseGrant: &LeaseGrantReponse{}, Revision: revision}
 }
 
 func leaseRevokeRequest(leaseID int64) EtcdRequest {
 	return EtcdRequest{Type: LeaseRevoke, LeaseRevoke: &LeaseRevokeRequest{LeaseID: leaseID}}
 }
 
-func leaseRevokeResponse(revision int64) MaybeEtcdResponse {
-	return MaybeEtcdResponse{EtcdResponse: EtcdResponse{LeaseRevoke: &LeaseRevokeResponse{}, Revision: revision}}
+func leaseRevokeResponse(revision int64) EtcdResponse {
+	return EtcdResponse{LeaseRevoke: &LeaseRevokeResponse{}, Revision: revision}
 }
 
 func defragmentRequest() EtcdRequest {
 	return EtcdRequest{Type: Defragment, Defragment: &DefragmentRequest{}}
 }
 
-func defragmentResponse(revision int64) MaybeEtcdResponse {
-	return MaybeEtcdResponse{EtcdResponse: EtcdResponse{Defragment: &DefragmentResponse{}, Revision: revision}}
+func defragmentResponse(revision int64) EtcdResponse {
+	return EtcdResponse{Defragment: &DefragmentResponse{}, Revision: revision}
 }
 
 func compactRequest(rev int64) EtcdRequest {
 	return EtcdRequest{Type: Compact, Compact: &CompactRequest{Revision: rev}}
 }
 
-func compactResponse(revision int64) MaybeEtcdResponse {
-	return MaybeEtcdResponse{EtcdResponse: EtcdResponse{Compact: &CompactResponse{}, Revision: revision}}
+func compactResponse(revision int64) EtcdResponse {
+	return EtcdResponse{Compact: &CompactResponse{}, Revision: revision}
 }
 
 type History struct {

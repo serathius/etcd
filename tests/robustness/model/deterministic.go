@@ -108,22 +108,22 @@ func freshEtcdState() EtcdState {
 }
 
 // Step handles a successful request, returning updated state and response it would generate.
-func (s EtcdState) Step(request EtcdRequest) (EtcdState, MaybeEtcdResponse) {
+func (s EtcdState) Step(request EtcdRequest) (EtcdState, EtcdResponse) {
 	newState := s.DeepCopy()
 
 	switch request.Type {
 	case Range:
 		if request.Range.Revision == 0 || request.Range.Revision == newState.Revision {
 			resp := newState.getRange(*request.Range)
-			return newState, MaybeEtcdResponse{EtcdResponse: EtcdResponse{Range: &resp, Revision: newState.Revision}}
+			return newState, EtcdResponse{Range: &resp, Revision: newState.Revision}
 		}
 		if request.Range.Revision > newState.Revision {
-			return newState, MaybeEtcdResponse{EtcdResponse: EtcdResponse{ClientError: ErrEtcdFutureRev.Error()}}
+			return newState, EtcdResponse{ClientError: ErrEtcdFutureRev.Error()}
 		}
 		if request.Range.Revision < newState.CompactRevision {
-			return newState, MaybeEtcdResponse{EtcdResponse: EtcdResponse{ClientError: mvcc.ErrCompacted.Error()}}
+			return newState, EtcdResponse{ClientError: mvcc.ErrCompacted.Error()}
 		}
-		return newState, MaybeEtcdResponse{EtcdResponse: EtcdResponse{Revision: newState.Revision}}
+		return newState, EtcdResponse{Revision: newState.Revision}
 	case Txn:
 		failure := false
 		for _, cond := range request.Txn.Conditions {
@@ -172,14 +172,14 @@ func (s EtcdState) Step(request EtcdRequest) (EtcdState, MaybeEtcdResponse) {
 		if increaseRevision {
 			newState.Revision++
 		}
-		return newState, MaybeEtcdResponse{EtcdResponse: EtcdResponse{Txn: &TxnResponse{Failure: failure, Results: opResp}, Revision: newState.Revision}}
+		return newState, EtcdResponse{Txn: &TxnResponse{Failure: failure, Results: opResp}, Revision: newState.Revision}
 	case LeaseGrant:
 		lease := EtcdLease{
 			LeaseID: request.LeaseGrant.LeaseID,
 			Keys:    map[string]struct{}{},
 		}
 		newState.Leases[request.LeaseGrant.LeaseID] = lease
-		return newState, MaybeEtcdResponse{EtcdResponse: EtcdResponse{Revision: newState.Revision, LeaseGrant: &LeaseGrantReponse{}}}
+		return newState, EtcdResponse{Revision: newState.Revision, LeaseGrant: &LeaseGrantReponse{}}
 	case LeaseRevoke:
 		//Delete the keys attached to the lease
 		keyDeleted := false
@@ -198,15 +198,15 @@ func (s EtcdState) Step(request EtcdRequest) (EtcdState, MaybeEtcdResponse) {
 		if keyDeleted {
 			newState.Revision++
 		}
-		return newState, MaybeEtcdResponse{EtcdResponse: EtcdResponse{Revision: newState.Revision, LeaseRevoke: &LeaseRevokeResponse{}}}
+		return newState, EtcdResponse{Revision: newState.Revision, LeaseRevoke: &LeaseRevokeResponse{}}
 	case Defragment:
-		return newState, MaybeEtcdResponse{EtcdResponse: EtcdResponse{Defragment: &DefragmentResponse{}, Revision: newState.Revision}}
+		return newState, EtcdResponse{Defragment: &DefragmentResponse{}, Revision: newState.Revision}
 	case Compact:
 		if request.Compact.Revision <= newState.CompactRevision {
-			return newState, MaybeEtcdResponse{EtcdResponse: EtcdResponse{ClientError: mvcc.ErrCompacted.Error()}}
+			return newState, EtcdResponse{ClientError: mvcc.ErrCompacted.Error()}
 		}
 		newState.CompactRevision = request.Compact.Revision
-		return newState, MaybeEtcdResponse{EtcdResponse: EtcdResponse{Compact: &CompactResponse{}, Revision: newState.Revision}}
+		return newState, EtcdResponse{Compact: &CompactResponse{}, Revision: newState.Revision}
 	default:
 		panic(fmt.Sprintf("Unknown request type: %v", request.Type))
 	}
@@ -431,19 +431,6 @@ type EtcdResponse struct {
 	Compact     *CompactResponse
 	ClientError string
 	Revision    int64
-}
-
-func (r1 MaybeEtcdResponse) Match(request EtcdRequest, r2 EtcdResponse) bool {
-	if r1.Persisted {
-		if r1.Persisted && r1.PersistedRevision == 0 {
-			return true
-		}
-		if r1.Persisted {
-			return r1.PersistedRevision == r2.Revision
-		}
-		return r1.Revision == r2.Revision
-	}
-	return r1.EtcdResponse.Match(request, r2)
 }
 
 func (r1 EtcdResponse) Match(request EtcdRequest, r2 EtcdResponse) bool {
