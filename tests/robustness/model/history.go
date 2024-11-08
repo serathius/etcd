@@ -273,9 +273,11 @@ func (h *AppendableHistory) AppendCompact(rev int64, start, end time.Duration, r
 		h.appendFailed(request, start, end, err)
 		return
 	}
-	// Set fake revision as compaction returns non-linearizable revision.
-	// TODO: Model non-linearizable response revision in model.
-	h.appendSuccessful(request, start, end, compactResponse(-1))
+	var revision int64
+	if resp != nil && resp.Header != nil {
+		revision = resp.Header.Revision
+	}
+	h.appendSuccessful(request, start, end, compactResponse(revision))
 }
 
 func (h *AppendableHistory) appendFailed(request EtcdRequest, start, end time.Duration, err error) {

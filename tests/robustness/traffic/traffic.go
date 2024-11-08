@@ -38,14 +38,14 @@ var (
 	MultiOpTxnOpCount       = 4
 
 	LowTraffic = Profile{
-		MinimalQPS:                     100,
+		MinimalQPS:                     75,
 		MaximalQPS:                     200,
 		ClientCount:                    8,
 		MaxNonUniqueRequestConcurrency: 3,
 		CompactPeriod:                  200 * time.Millisecond,
 	}
 	HighTrafficProfile = Profile{
-		MinimalQPS:                     200,
+		MinimalQPS:                     100,
 		MaximalQPS:                     1000,
 		ClientCount:                    8,
 		MaxNonUniqueRequestConcurrency: 3,

@@ -354,187 +354,247 @@ func TestModelNonDeterministic(t *testing.T) {
 
 func TestModelResponseMatch(t *testing.T) {
 	tcs := []struct {
+		request     EtcdRequest
 		resp1       EtcdResponse
 		resp2       MaybeEtcdResponse
 		expectMatch bool
 	}{
 		{
+			request:     getRequest("key"),
 			resp1:       getResponse("key", "a", 1, 1).EtcdResponse,
 			resp2:       getResponse("key", "a", 1, 1),
 			expectMatch: true,
 		},
 		{
+			request:     getRequest("key"),
 			resp1:       getResponse("key", "a", 1, 1).EtcdResponse,
 			resp2:       getResponse("key", "b", 1, 1),
 			expectMatch: false,
 		},
 		{
+			request:     getRequest("key"),
 			resp1:       getResponse("key", "a", 1, 1).EtcdResponse,
 			resp2:       getResponse("key", "a", 2, 1),
 			expectMatch: false,
 		},
 		{
+			request:     getRequest("key"),
 			resp1:       getResponse("key", "a", 1, 1).EtcdResponse,
 			resp2:       getResponse("key", "a", 1, 2),
 			expectMatch: false,
 		},
 		{
+			request:     getRequest("key"),
 			resp1:       getResponse("key", "a", 1, 1).EtcdResponse,
 			resp2:       failedResponse(errors.New("failed request")),
 			expectMatch: false,
 		},
 		{
+			request:     getRequest("key"),
 			resp1:       getResponse("key", "a", 1, 1).EtcdResponse,
 			resp2:       partialResponse(1),
 			expectMatch: true,
 		},
 		{
+			request:     getRequest("key"),
 			resp1:       getResponse("key", "a", 1, 1).EtcdResponse,
 			resp2:       partialResponse(2),
 			expectMatch: false,
 		},
 		{
+			request:     putRequest("key", "value"),
 			resp1:       putResponse(3).EtcdResponse,
 			resp2:       putResponse(3),
 			expectMatch: true,
 		},
 		{
+			request:     putRequest("key", "value"),
 			resp1:       putResponse(3).EtcdResponse,
 			resp2:       putResponse(4),
 			expectMatch: false,
 		},
 		{
+			request:     putRequest("key", "value"),
 			resp1:       putResponse(3).EtcdResponse,
 			resp2:       failedResponse(errors.New("failed request")),
 			expectMatch: false,
 		},
 		{
+			request:     putRequest("key", "value"),
 			resp1:       putResponse(3).EtcdResponse,
 			resp2:       partialResponse(3),
 			expectMatch: true,
 		},
 		{
+			request:     putRequest("key", "value"),
 			resp1:       putResponse(3).EtcdResponse,
 			resp2:       partialResponse(1),
 			expectMatch: false,
 		},
 		{
+			request:     putRequest("key", "value"),
 			resp1:       putResponse(3).EtcdResponse,
 			resp2:       partialResponse(0),
 			expectMatch: true,
 		},
 		{
+			request:     deleteRequest("key"),
 			resp1:       deleteResponse(1, 5).EtcdResponse,
 			resp2:       deleteResponse(1, 5),
 			expectMatch: true,
 		},
 		{
+			request:     deleteRequest("key"),
 			resp1:       deleteResponse(1, 5).EtcdResponse,
 			resp2:       deleteResponse(0, 5),
 			expectMatch: false,
 		},
 		{
+			request:     deleteRequest("key"),
 			resp1:       deleteResponse(1, 5).EtcdResponse,
 			resp2:       deleteResponse(1, 6),
 			expectMatch: false,
 		},
 		{
+			request:     deleteRequest("key"),
 			resp1:       deleteResponse(1, 5).EtcdResponse,
 			resp2:       failedResponse(errors.New("failed request")),
 			expectMatch: false,
 		},
 		{
+			request:     deleteRequest("key"),
 			resp1:       deleteResponse(1, 5).EtcdResponse,
 			resp2:       partialResponse(5),
 			expectMatch: true,
 		},
 		{
+			request:     deleteRequest("key"),
 			resp1:       deleteResponse(0, 5).EtcdResponse,
 			resp2:       partialResponse(4),
 			expectMatch: false,
 		},
 		{
+			request:     deleteRequest("key"),
 			resp1:       deleteResponse(0, 5).EtcdResponse,
 			resp2:       partialResponse(0),
 			expectMatch: true,
 		},
 		{
+			request:     deleteRequest("key"),
 			resp1:       deleteResponse(1, 5).EtcdResponse,
 			resp2:       partialResponse(0),
 			expectMatch: true,
 		},
 		{
+			request:     deleteRequest("key"),
 			resp1:       deleteResponse(0, 5).EtcdResponse,
 			resp2:       partialResponse(2),
 			expectMatch: false,
 		},
 		{
+			request:     compareRevisionAndPutRequest("key", 3, "value"),
 			resp1:       compareRevisionAndPutResponse(false, 7).EtcdResponse,
 			resp2:       compareRevisionAndPutResponse(false, 7),
 			expectMatch: true,
 		},
 		{
+			request:     compareRevisionAndPutRequest("key", 3, "value"),
 			resp1:       compareRevisionAndPutResponse(true, 7).EtcdResponse,
 			resp2:       compareRevisionAndPutResponse(false, 7),
 			expectMatch: false,
 		},
 		{
+			request:     compareRevisionAndPutRequest("key", 3, "value"),
 			resp1:       compareRevisionAndPutResponse(false, 7).EtcdResponse,
 			resp2:       compareRevisionAndPutResponse(false, 8),
 			expectMatch: false,
 		},
 		{
+			request:     compareRevisionAndPutRequest("key", 3, "value"),
 			resp1:       compareRevisionAndPutResponse(false, 7).EtcdResponse,
 			resp2:       failedResponse(errors.New("failed request")),
 			expectMatch: false,
 		},
 		{
+			request:     compareRevisionAndPutRequest("key", 3, "value"),
 			resp1:       compareRevisionAndPutResponse(true, 7).EtcdResponse,
 			resp2:       partialResponse(7),
 			expectMatch: true,
 		},
 		{
+			request:     compareRevisionAndPutRequest("key", 3, "value"),
 			resp1:       compareRevisionAndPutResponse(false, 7).EtcdResponse,
 			resp2:       partialResponse(7),
 			expectMatch: true,
 		},
 		{
+			request:     compareRevisionAndPutRequest("key", 3, "value"),
 			resp1:       compareRevisionAndPutResponse(true, 7).EtcdResponse,
 			resp2:       partialResponse(4),
 			expectMatch: false,
 		},
 		{
+			request:     compareRevisionAndPutRequest("key", 3, "value"),
 			resp1:       compareRevisionAndPutResponse(false, 7).EtcdResponse,
 			resp2:       partialResponse(3),
 			expectMatch: false,
 		},
 		{
+			request:     compareRevisionAndPutRequest("key", 3, "value"),
 			resp1:       compareRevisionAndPutResponse(false, 7).EtcdResponse,
 			resp2:       partialResponse(0),
 			expectMatch: true,
 		},
 		{
+			request:     EtcdRequest{Type: Txn, Txn: &TxnRequest{Conditions: []EtcdCondition{{Key: "key", ExpectedRevision: 3}}, OperationsOnSuccess: []EtcdOperation{{Type: DeleteOperation, Delete: DeleteOptions{Key: "key"}}}}},
 			resp1:       EtcdResponse{Revision: 1, Txn: &TxnResponse{Failure: false, Results: []EtcdOperationResult{{Deleted: 1}}}},
 			resp2:       failedResponse(errors.New("failed request")),
 			expectMatch: false,
 		},
 		{
+			request:     putRequest("key", "value"),
 			resp1:       putResponse(2).EtcdResponse,
 			resp2:       MaybeEtcdResponse{Persisted: true},
 			expectMatch: true,
 		},
 		{
+			request:     putRequest("key", "value"),
 			resp1:       putResponse(2).EtcdResponse,
 			resp2:       MaybeEtcdResponse{Persisted: true, PersistedRevision: 2},
 			expectMatch: true,
 		},
 		{
+			request:     putRequest("key", "value"),
 			resp1:       putResponse(2).EtcdResponse,
 			resp2:       MaybeEtcdResponse{Persisted: true, PersistedRevision: 3},
 			expectMatch: false,
 		},
+		{
+			request:     EtcdRequest{Type: Range, Range: &RangeRequest{Serializable: false}},
+			resp1:       getResponse("key", "a", 1, 1).EtcdResponse,
+			resp2:       getResponse("key", "a", 1, 2),
+			expectMatch: false,
+		},
+		{
+			request:     EtcdRequest{Type: Range, Range: &RangeRequest{Serializable: true}},
+			resp1:       getResponse("key", "a", 1, 1).EtcdResponse,
+			resp2:       getResponse("key", "a", 1, 2),
+			expectMatch: true,
+		},
+		{
+			request:     EtcdRequest{Type: Range, Range: &RangeRequest{Serializable: true}},
+			resp1:       getResponse("key", "a", 1, 2).EtcdResponse,
+			resp2:       getResponse("key", "a", 2, 2),
+			expectMatch: false,
+		},
+		{
+			request:     compactRequest(2),
+			resp1:       compactResponse(2).EtcdResponse,
+			resp2:       compactResponse(3),
+			expectMatch: true,
+		},
 	}
 	for i, tc := range tcs {
-		assert.Equalf(t, tc.expectMatch, tc.resp2.Match(tc.resp1), "%d %+v %+v", i, tc.resp1, tc.resp2)
+		assert.Equalf(t, tc.expectMatch, tc.resp2.Match(tc.request, tc.resp1), "Case %d, request: %+v\nResponse1: %+v\nResponse2: %+v\n", i, tc.request, tc.resp1, tc.resp2)
 	}
 }

@@ -76,7 +76,7 @@ type EtcdState struct {
 
 func (s EtcdState) apply(request EtcdRequest, response EtcdResponse) (bool, EtcdState) {
 	newState, modelResponse := s.Step(request)
-	return modelResponse.Match(response), newState
+	return modelResponse.Match(request, response), newState
 }
 
 func (s EtcdState) DeepCopy() EtcdState {
@@ -206,9 +206,7 @@ func (s EtcdState) Step(request EtcdRequest) (EtcdState, MaybeEtcdResponse) {
 			return newState, MaybeEtcdResponse{EtcdResponse: EtcdResponse{ClientError: mvcc.ErrCompacted.Error()}}
 		}
 		newState.CompactRevision = request.Compact.Revision
-		// Set fake revision as compaction returns non-linearizable revision.
-		// TODO: Model non-linearizable response revision in model.
-		return newState, MaybeEtcdResponse{EtcdResponse: EtcdResponse{Compact: &CompactResponse{}, Revision: -1}}
+		return newState, MaybeEtcdResponse{EtcdResponse: EtcdResponse{Compact: &CompactResponse{}, Revision: newState.Revision}}
 	default:
 		panic(fmt.Sprintf("Unknown request type: %v", request.Type))
 	}
@@ -431,7 +429,7 @@ type EtcdResponse struct {
 	Revision    int64
 }
 
-func (r1 MaybeEtcdResponse) Match(r2 EtcdResponse) bool {
+func (r1 MaybeEtcdResponse) Match(request EtcdRequest, r2 EtcdResponse) bool {
 	if r1.Persisted {
 		if r1.Persisted && r1.PersistedRevision == 0 {
 			return true
@@ -441,10 +439,14 @@ func (r1 MaybeEtcdResponse) Match(r2 EtcdResponse) bool {
 		}
 		return r1.Revision == r2.Revision
 	}
-	return r1.EtcdResponse.Match(r2)
+	return r1.EtcdResponse.Match(request, r2)
 }
 
-func (r1 EtcdResponse) Match(r2 EtcdResponse) bool {
+func (r1 EtcdResponse) Match(request EtcdRequest, r2 EtcdResponse) bool {
+	if !request.IsLinearizable() {
+		r1.Revision = -1
+		r2.Revision = -1
+	}
 	return reflect.DeepEqual(r1, r2)
 }
 

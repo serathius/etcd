@@ -109,7 +109,7 @@ func (states nonDeterministicState) applyRequestWithResponse(request EtcdRequest
 	newStates := make(nonDeterministicState, 0, len(states))
 	for _, s := range states {
 		newState, modelResponse := s.Step(request)
-		if modelResponse.Match(response) {
+		if modelResponse.Match(request, response) {
 			newStates = append(newStates, newState)
 		}
 	}
