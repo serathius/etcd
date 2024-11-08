@@ -88,7 +88,7 @@ func validateSerializableRead(lg *zap.Logger, replay *model.EtcdReplay, request 
 	}
 	state, err := replay.StateForRevision(request.Range.Revision)
 	if err != nil {
-		if response.Error == model.ErrEtcdFutureRev.Error() {
+		if response.ClientError == model.ErrEtcdFutureRev.Error() {
 			return nil
 		}
 		lg.Error("Failed validating serializable operation", zap.Any("request", request), zap.Any("response", response))

@@ -118,7 +118,7 @@ func (s EtcdState) Step(request EtcdRequest) (EtcdState, MaybeEtcdResponse) {
 			return newState, MaybeEtcdResponse{EtcdResponse: EtcdResponse{Range: &resp, Revision: newState.Revision}}
 		}
 		if request.Range.Revision > newState.Revision {
-			return newState, MaybeEtcdResponse{Error: ErrEtcdFutureRev.Error()}
+			return newState, MaybeEtcdResponse{EtcdResponse: EtcdResponse{ClientError: ErrEtcdFutureRev.Error()}}
 		}
 		if request.Range.Revision < newState.CompactRevision {
 			return newState, MaybeEtcdResponse{EtcdResponse: EtcdResponse{ClientError: mvcc.ErrCompacted.Error()}}
