@@ -36,7 +36,7 @@ func describeEtcdResponse(request EtcdRequest, response MaybeEtcdResponse) strin
 	}
 	switch request.Type {
 	case Range:
-		return fmt.Sprintf("%s, rev: %d", describeRangeResponse(request.Range.RangeOptions, *response.Range), response.Revision)
+		return fmt.Sprintf("%s, rev: %d", describeRangeResponse(*request.Range, *response.Range), response.Revision)
 	case Txn:
 		return fmt.Sprintf("%s, rev: %d", describeTxnResponse(request.Txn, response.Txn), response.Revision)
 	case LeaseGrant, LeaseRevoke, Defragment:
@@ -54,7 +54,7 @@ func describeEtcdResponse(request EtcdRequest, response MaybeEtcdResponse) strin
 func describeEtcdRequest(request EtcdRequest) string {
 	switch request.Type {
 	case Range:
-		return describeRangeRequest(request.Range.RangeOptions, request.Range.Revision)
+		return describeRangeRequest(*request.Range, request.Range.Revision)
 	case Txn:
 		guaranteedTxnDescription := describeGuaranteedTxn(request.Txn)
 		if guaranteedTxnDescription != "" {
@@ -155,25 +155,25 @@ func describeEtcdOperation(op EtcdOperation) string {
 	}
 }
 
-func describeRangeRequest(opts RangeOptions, revision int64) string {
+func describeRangeRequest(r RangeRequest, revision int64) string {
 	kwargs := []string{}
 	if revision != 0 {
 		kwargs = append(kwargs, fmt.Sprintf("rev=%d", revision))
 	}
-	if opts.Limit != 0 {
-		kwargs = append(kwargs, fmt.Sprintf("limit=%d", opts.Limit))
+	if r.Limit != 0 {
+		kwargs = append(kwargs, fmt.Sprintf("limit=%d", r.Limit))
 	}
 	kwargsString := strings.Join(kwargs, ", ")
 	if kwargsString != "" {
 		kwargsString = ", " + kwargsString
 	}
 	switch {
-	case opts.End == "":
-		return fmt.Sprintf("get(%q%s)", opts.Start, kwargsString)
-	case opts.End == clientv3.GetPrefixRangeEnd(opts.Start):
-		return fmt.Sprintf("list(%q%s)", opts.Start, kwargsString)
+	case r.End == "":
+		return fmt.Sprintf("get(%q%s)", r.Start, kwargsString)
+	case r.End == clientv3.GetPrefixRangeEnd(r.Start):
+		return fmt.Sprintf("list(%q%s)", r.Start, kwargsString)
 	default:
-		return fmt.Sprintf("range(%q..%q%s)", opts.Start, opts.End, kwargsString)
+		return fmt.Sprintf("range(%q..%q%s)", r.Start, r.End, kwargsString)
 	}
 }
 
@@ -190,7 +190,7 @@ func describeEtcdOperationResponse(op EtcdOperation, resp EtcdOperationResult) s
 	}
 }
 
-func describeRangeResponse(request RangeOptions, response RangeResponse) string {
+func describeRangeResponse(request RangeRequest, response RangeResponse) string {
 	if request.End != "" {
 		kvs := make([]string, len(response.KVs))
 		for i, kv := range response.KVs {

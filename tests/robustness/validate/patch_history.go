@@ -38,7 +38,7 @@ func relevantOperations(reports []report.ClientReport) []porcupine.Operation {
 			request := op.Input.(model.EtcdRequest)
 			resp := op.Output.(model.MaybeEtcdResponse)
 			// Remove failed read requests as they are not relevant for linearization.
-			if resp.Error == "" || !request.IsRead() {
+			if resp.Error == "" || !request.IsReadOnly() {
 				ops = append(ops, op)
 			}
 		}

@@ -196,7 +196,7 @@ func toEtcdOperation(option clientv3.Op) (op EtcdOperation) {
 	switch {
 	case option.IsGet():
 		op.Type = RangeOperation
-		op.Range = RangeOptions{
+		op.Range = RangeRequest{
 			Start: string(option.KeyBytes()),
 			End:   string(option.RangeBytes()),
 		}
@@ -286,7 +286,7 @@ func (h *AppendableHistory) appendFailed(request EtcdRequest, start, end time.Du
 		Output:   failedResponse(err),
 		Return:   end.Nanoseconds(),
 	}
-	isRead := request.IsRead()
+	isRead := request.IsReadOnly()
 	if !isRead {
 		// Failed writes can still be persisted, setting -1 for now as don't know when request has took effect.
 		op.Return = -1
@@ -334,7 +334,7 @@ func staleListRequest(key string, limit, revision int64) EtcdRequest {
 }
 
 func staleRangeRequest(start, end string, limit, revision int64) EtcdRequest {
-	return EtcdRequest{Type: Range, Range: &RangeRequest{RangeOptions: RangeOptions{Start: start, End: end, Limit: limit}, Revision: revision}}
+	return EtcdRequest{Type: Range, Range: &RangeRequest{Start: start, End: end, Limit: limit, Revision: revision}}
 }
 
 func emptyGetResponse(revision int64) MaybeEtcdResponse {

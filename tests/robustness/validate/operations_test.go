@@ -254,12 +254,11 @@ func rangeRequest(start, end string, rev, limit int64) model.EtcdRequest {
 	return model.EtcdRequest{
 		Type: model.Range,
 		Range: &model.RangeRequest{
-			RangeOptions: model.RangeOptions{
-				Start: start,
-				End:   end,
-				Limit: limit,
-			},
-			Revision: rev,
+			Start:        start,
+			End:          end,
+			Limit:        limit,
+			Revision:     rev,
+			Serializable: false,
 		},
 	}
 }

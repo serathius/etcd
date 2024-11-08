@@ -114,7 +114,7 @@ func (s EtcdState) Step(request EtcdRequest) (EtcdState, MaybeEtcdResponse) {
 	switch request.Type {
 	case Range:
 		if request.Range.Revision == 0 || request.Range.Revision == newState.Revision {
-			resp := newState.getRange(request.Range.RangeOptions)
+			resp := newState.getRange(*request.Range)
 			return newState, MaybeEtcdResponse{EtcdResponse: EtcdResponse{Range: &resp, Revision: newState.Revision}}
 		}
 		if request.Range.Revision > newState.Revision {
@@ -214,7 +214,7 @@ func (s EtcdState) Step(request EtcdRequest) (EtcdState, MaybeEtcdResponse) {
 	}
 }
 
-func (s EtcdState) getRange(options RangeOptions) RangeResponse {
+func (s EtcdState) getRange(options RangeRequest) RangeResponse {
 	response := RangeResponse{
 		KVs: []KeyValue{},
 	}
@@ -281,30 +281,45 @@ type EtcdRequest struct {
 	Compact     *CompactRequest
 }
 
-func (r *EtcdRequest) IsRead() bool {
-	if r.Type == Range {
+func (r EtcdRequest) IsLinearizable() bool {
+	switch r.Type {
+	case Range:
+		return r.Range.IsLinearizable()
+	case Txn:
+		return r.Txn.IsLinearizable()
+	case LeaseGrant, LeaseRevoke, Defragment:
 		return true
-	}
-	if r.Type != Txn {
+	case Compact:
 		return false
+	default:
+		panic(fmt.Sprintf("Unknown request type: %q", r.Type))
 	}
-	for _, op := range append(r.Txn.OperationsOnSuccess, r.Txn.OperationsOnFailure...) {
-		if op.Type != RangeOperation {
-			return false
-		}
+}
+
+func (r *EtcdRequest) IsReadOnly() bool {
+	switch r.Type {
+	case Range:
+		return true
+	case Txn:
+		return r.Txn.IsReadOnly()
+	case LeaseGrant, LeaseRevoke, Defragment, Compact:
+		return false
+	default:
+		panic(fmt.Sprintf("Unknown request type: %q", r.Type))
 	}
 	return true
 }
 
 type RangeRequest struct {
-	RangeOptions
-	Revision int64
+	Start        string
+	End          string
+	Limit        int64
+	Serializable bool
+	Revision     int64
 }
 
-type RangeOptions struct {
-	Start string
-	End   string
-	Limit int64
+func (r RangeRequest) IsLinearizable() bool {
+	return !r.Serializable
 }
 
 type PutOptions struct {
@@ -323,6 +338,34 @@ type TxnRequest struct {
 	OperationsOnFailure []EtcdOperation
 }
 
+func (r TxnRequest) IsLinearizable() bool {
+	for _, op := range r.OperationsOnSuccess {
+		if !op.IsLinearizable() {
+			return false
+		}
+	}
+	for _, op := range r.OperationsOnSuccess {
+		if !op.IsLinearizable() {
+			return false
+		}
+	}
+	return true
+}
+
+func (r TxnRequest) IsReadOnly() bool {
+	for _, op := range r.OperationsOnSuccess {
+		if op.Type != RangeOperation {
+			return false
+		}
+	}
+	for _, op := range r.OperationsOnSuccess {
+		if op.Type != RangeOperation {
+			return false
+		}
+	}
+	return true
+}
+
 type EtcdCondition struct {
 	Key              string
 	ExpectedRevision int64
@@ -330,9 +373,20 @@ type EtcdCondition struct {
 
 type EtcdOperation struct {
 	Type   OperationType
-	Range  RangeOptions
+	Range  RangeRequest
 	Put    PutOptions
 	Delete DeleteOptions
+}
+
+func (o EtcdOperation) IsLinearizable() bool {
+	switch o.Type {
+	case RangeOperation:
+		return o.Range.IsLinearizable()
+	case PutOperation, DeleteOperation:
+		return true
+	default:
+		panic(fmt.Sprintf("Unknown op %s", o.Type))
+	}
 }
 
 type OperationType string

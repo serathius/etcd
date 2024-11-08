@@ -115,7 +115,7 @@ func validateEmptyDatabaseAtStart(reports []report.ClientReport) error {
 		for _, op := range r.KeyValue {
 			request := op.Input.(model.EtcdRequest)
 			response := op.Output.(model.MaybeEtcdResponse)
-			if response.Revision == 2 && !request.IsRead() {
+			if response.Revision == 2 && !request.IsReadOnly() {
 				return nil
 			}
 		}
@@ -161,7 +161,7 @@ func validatePersistedRequestMatchClientRequests(reports []report.ClientReport, 
 		for _, op := range r.KeyValue {
 			request := op.Input.(model.EtcdRequest)
 			response := op.Output.(model.MaybeEtcdResponse)
-			if response.Error != "" || request.IsRead() {
+			if response.Error != "" || request.IsReadOnly() {
 				continue
 			}
 			if firstOp.Call == 0 || op.Call < firstOp.Call {
