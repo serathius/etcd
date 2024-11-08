@@ -76,7 +76,7 @@ type EtcdState struct {
 
 func (s EtcdState) apply(request EtcdRequest, response EtcdResponse) (bool, EtcdState) {
 	newState, modelResponse := s.Step(request)
-	return Match(MaybeEtcdResponse{EtcdResponse: response}, modelResponse), newState
+	return modelResponse.Match(response), newState
 }
 
 func (s EtcdState) DeepCopy() EtcdState {
@@ -431,16 +431,21 @@ type EtcdResponse struct {
 	Revision    int64
 }
 
-func Match(r1, r2 MaybeEtcdResponse) bool {
-	r1Revision := r1.Revision
+func (r1 MaybeEtcdResponse) Match(r2 EtcdResponse) bool {
 	if r1.Persisted {
-		r1Revision = r1.PersistedRevision
+		if r1.Persisted && r1.PersistedRevision == 0 {
+			return true
+		}
+		if r1.Persisted {
+			return r1.PersistedRevision == r2.Revision
+		}
+		return r1.Revision == r2.Revision
 	}
-	r2Revision := r2.Revision
-	if r2.Persisted {
-		r2Revision = r2.PersistedRevision
-	}
-	return (r1.Persisted && r1.PersistedRevision == 0) || (r2.Persisted && r2.PersistedRevision == 0) || ((r1.Persisted || r2.Persisted) && (r1.Error != "" || r2.Error != "" || r1Revision == r2Revision)) || reflect.DeepEqual(r1, r2)
+	return r1.EtcdResponse.Match(r2)
+}
+
+func (r1 EtcdResponse) Match(r2 EtcdResponse) bool {
+	return reflect.DeepEqual(r1, r2)
 }
 
 type TxnResponse struct {
