@@ -159,13 +159,12 @@ var commonTestScenarios = []modelTestCase{
 		},
 	},
 	{
-		name: "Stale Get need to match put if asking about matching revision",
+		name: "Stale Get need to match last revision as model doesn't validate stale reads",
 		operations: []testOperation{
 			{req: putRequest("key1", "1"), resp: putResponse(2)},
-			{req: staleGetRequest("key1", 2), resp: getResponse("key1", "1", 3, 2), expectFailure: true},
-			{req: staleGetRequest("key1", 2), resp: getResponse("key1", "1", 2, 3), expectFailure: true},
-			{req: staleGetRequest("key1", 2), resp: getResponse("key1", "2", 2, 2), expectFailure: true},
-			{req: staleGetRequest("key1", 2), resp: getResponse("key1", "1", 2, 2)},
+			{req: staleGetRequest("key1", 2), resp: emptyGetResponse(1), expectFailure: true},
+			{req: staleGetRequest("key1", 2), resp: emptyGetResponse(3), expectFailure: true},
+			{req: staleGetRequest("key1", 2), resp: emptyGetResponse(2)},
 		},
 	},
 	{

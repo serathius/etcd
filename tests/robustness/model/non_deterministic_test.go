@@ -582,6 +582,18 @@ func TestModelResponseMatch(t *testing.T) {
 			expectMatch: true,
 		},
 		{
+			request:     staleGetRequest("key", 2),
+			resp1:       EtcdResponse{Revision: 1},
+			resp2:       getResponse("key", "a", 1, 1),
+			expectMatch: true,
+		},
+		{
+			request:     staleGetRequest("key", 2),
+			resp1:       EtcdResponse{Revision: 1},
+			resp2:       getResponse("key", "a", 1, 2),
+			expectMatch: false,
+		},
+		{
 			request:     EtcdRequest{Type: Range, Range: &RangeRequest{Serializable: true}},
 			resp1:       getResponse("key", "a", 1, 2).EtcdResponse,
 			resp2:       getResponse("key", "a", 2, 2),
