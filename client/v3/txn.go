@@ -49,6 +49,8 @@ type Txn interface {
 
 	// Commit tries to commit the transaction.
 	Commit() (*TxnResponse, error)
+
+	Request() *pb.TxnRequest
 }
 
 type txn struct {
@@ -138,7 +140,7 @@ func (txn *txn) Commit() (*TxnResponse, error) {
 	txn.mu.Lock()
 	defer txn.mu.Unlock()
 
-	r := &pb.TxnRequest{Compare: txn.cmps, Success: txn.sus, Failure: txn.fas}
+	r := txn.Request()
 
 	var resp *pb.TxnResponse
 	var err error
@@ -147,4 +149,8 @@ func (txn *txn) Commit() (*TxnResponse, error) {
 		return nil, ContextError(txn.ctx, err)
 	}
 	return (*TxnResponse)(resp), nil
+}
+
+func (txn *txn) Request() *pb.TxnRequest {
+	return &pb.TxnRequest{Compare: txn.cmps, Success: txn.sus, Failure: txn.fas}
 }

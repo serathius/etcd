@@ -17,6 +17,7 @@ package client
 import (
 	"context"
 	"fmt"
+	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	"sync"
 	"time"
 
@@ -61,12 +62,17 @@ func NewRecordingClient(endpoints []string, ids identity.Provider, baseTime time
 	if err != nil {
 		return nil, err
 	}
-	return &RecordingClient{
+	rc := &RecordingClient{
 		ID:           ids.NewClientID(),
 		client:       *cc,
 		kvOperations: model.NewAppendableHistory(ids),
 		baseTime:     baseTime,
-	}, nil
+	}
+	rc.client.KV = &kvWrapper{
+		kv: rc.client.KV,
+		rc: rc,
+	}
+	return rc, nil
 }
 
 func (c *RecordingClient) Close() error {
@@ -103,33 +109,15 @@ func (c *RecordingClient) Range(ctx context.Context, start, end string, revision
 	if limit != 0 {
 		ops = append(ops, clientv3.WithLimit(limit))
 	}
-	c.kvMux.Lock()
-	defer c.kvMux.Unlock()
-	callTime := time.Since(c.baseTime)
-	resp, err := c.client.Get(ctx, start, ops...)
-	returnTime := time.Since(c.baseTime)
-	c.kvOperations.AppendRange(start, end, revision, limit, callTime, returnTime, resp, err)
-	return resp, err
+	return c.client.Get(ctx, start, ops...)
 }
 
 func (c *RecordingClient) Put(ctx context.Context, key, value string) (*clientv3.PutResponse, error) {
-	c.kvMux.Lock()
-	defer c.kvMux.Unlock()
-	callTime := time.Since(c.baseTime)
-	resp, err := c.client.Put(ctx, key, value)
-	returnTime := time.Since(c.baseTime)
-	c.kvOperations.AppendPut(key, value, callTime, returnTime, resp, err)
-	return resp, err
+	return c.client.Put(ctx, key, value)
 }
 
 func (c *RecordingClient) Delete(ctx context.Context, key string) (*clientv3.DeleteResponse, error) {
-	c.kvMux.Lock()
-	defer c.kvMux.Unlock()
-	callTime := time.Since(c.baseTime)
-	resp, err := c.client.Delete(ctx, key)
-	returnTime := time.Since(c.baseTime)
-	c.kvOperations.AppendDelete(key, callTime, returnTime, resp, err)
-	return resp, err
+	return c.Delete(ctx, key)
 }
 
 func (c *RecordingClient) Txn(ctx context.Context, conditions []clientv3.Cmp, onSuccess []clientv3.Op, onFailure []clientv3.Op) (*clientv3.TxnResponse, error) {
@@ -191,13 +179,7 @@ func (c *RecordingClient) Defragment(ctx context.Context) (*clientv3.DefragmentR
 }
 
 func (c *RecordingClient) Compact(ctx context.Context, rev int64) (*clientv3.CompactResponse, error) {
-	c.kvMux.Lock()
-	defer c.kvMux.Unlock()
-	callTime := time.Since(c.baseTime)
-	resp, err := c.client.Compact(ctx, rev)
-	returnTime := time.Since(c.baseTime)
-	c.kvOperations.AppendCompact(rev, callTime, returnTime, resp, err)
-	return resp, err
+	return c.client.Compact(ctx, rev)
 }
 
 func (c *RecordingClient) MemberList(ctx context.Context, opts ...clientv3.OpOption) (*clientv3.MemberListResponse, error) {
@@ -344,4 +326,100 @@ func toWatchEvent(event clientv3.Event) (watch model.WatchEvent) {
 		panic(fmt.Sprintf("Unexpected event type: %s", event.Type))
 	}
 	return watch
+}
+
+type kvWrapper struct {
+	kv clientv3.KV
+	rc *RecordingClient
+}
+
+func (k kvWrapper) Put(ctx context.Context, key, val string, opts ...clientv3.OpOption) (*clientv3.PutResponse, error) {
+	k.rc.kvMux.Lock()
+	defer k.rc.kvMux.Unlock()
+	callTime := time.Since(k.rc.baseTime)
+	resp, err := k.kv.Put(ctx, key, val)
+	returnTime := time.Since(k.rc.baseTime)
+	k.rc.kvOperations.AppendPut(key, val, callTime, returnTime, resp, err)
+	return resp, err
+}
+
+func (k kvWrapper) Get(ctx context.Context, key string, opts ...clientv3.OpOption) (*clientv3.GetResponse, error) {
+	k.rc.kvMux.Lock()
+	defer k.rc.kvMux.Unlock()
+	callTime := time.Since(k.rc.baseTime)
+	resp, err := k.kv.Get(ctx, key, opts...)
+	returnTime := time.Since(k.rc.baseTime)
+	config := clientv3.Op{}
+	for _, op := range opts {
+		op(&config)
+	}
+	k.rc.kvOperations.AppendRange(key, string(config.RangeBytes()), config.Rev(), config.Limit(), callTime, returnTime, resp, err)
+	return resp, err
+}
+
+func (k kvWrapper) Delete(ctx context.Context, key string, opts ...clientv3.OpOption) (*clientv3.DeleteResponse, error) {
+	k.rc.kvMux.Lock()
+	defer k.rc.kvMux.Unlock()
+	callTime := time.Since(k.rc.baseTime)
+	resp, err := k.kv.Delete(ctx, key)
+	returnTime := time.Since(k.rc.baseTime)
+	k.rc.kvOperations.AppendDelete(key, callTime, returnTime, resp, err)
+	return resp, err
+}
+
+func (k kvWrapper) Compact(ctx context.Context, rev int64, opts ...clientv3.CompactOption) (*clientv3.CompactResponse, error) {
+	k.rc.kvMux.Lock()
+	defer k.rc.kvMux.Unlock()
+	callTime := time.Since(k.rc.baseTime)
+	resp, err := k.kv.Compact(ctx, rev)
+	returnTime := time.Since(k.rc.baseTime)
+	k.rc.kvOperations.AppendCompact(rev, callTime, returnTime, resp, err)
+	return resp, err
+}
+
+func (k kvWrapper) Do(ctx context.Context, op clientv3.Op) (clientv3.OpResponse, error) {
+	panic("not supported")
+}
+
+func (k kvWrapper) Txn(ctx context.Context) clientv3.Txn {
+	return &txnWrapper{
+		txn: k.Txn(ctx),
+		rc:  k.rc,
+	}
+}
+
+type txnWrapper struct {
+	txn clientv3.Txn
+	rc  *RecordingClient
+}
+
+func (t txnWrapper) If(cs ...clientv3.Cmp) clientv3.Txn {
+	t.txn = t.txn.If(cs...)
+	return t
+}
+
+func (t txnWrapper) Then(ops ...clientv3.Op) clientv3.Txn {
+	t.txn = t.txn.Then(ops...)
+	return t
+}
+
+func (t txnWrapper) Else(ops ...clientv3.Op) clientv3.Txn {
+	t.txn = t.txn.Else(ops...)
+	return t
+}
+
+func (t txnWrapper) Commit() (*clientv3.TxnResponse, error) {
+	t.rc.kvMux.Lock()
+	defer t.rc.kvMux.Unlock()
+	callTime := time.Since(t.rc.baseTime)
+	req := t.txn.Request()
+	resp, err := t.txn.Commit()
+	returnTime := time.Since(t.rc.baseTime)
+
+	t.rc.kvOperations.AppendTxn(req.Compare, req.Success, req.Failure, callTime, returnTime, resp, err)
+	return resp, err
+}
+
+func (t txnWrapper) Request() *pb.TxnRequest {
+	return t.txn.Request()
 }

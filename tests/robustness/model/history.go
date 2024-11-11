@@ -139,7 +139,7 @@ func (h *AppendableHistory) AppendDelete(key string, start, end time.Duration, r
 	h.appendSuccessful(request, start, end, deleteResponse(deleted, revision))
 }
 
-func (h *AppendableHistory) AppendTxn(cmp []clientv3.Cmp, clientOnSuccessOps, clientOnFailure []clientv3.Op, start, end time.Duration, resp *clientv3.TxnResponse, err error) {
+func (h *AppendableHistory) AppendTxn(cmp []*etcdserverpb.Compare, clientOnSuccessOps, clientOnFailure []*etcdserverpb.RequestOp, start, end time.Duration, resp *clientv3.TxnResponse, err error) {
 	conds := []EtcdCondition{}
 	for _, cmp := range cmp {
 		conds = append(conds, toEtcdCondition(cmp))
@@ -179,12 +179,12 @@ func (h *AppendableHistory) appendSuccessful(request EtcdRequest, start, end tim
 	h.append(op)
 }
 
-func toEtcdCondition(cmp clientv3.Cmp) (cond EtcdCondition) {
+func toEtcdCondition(cmp etcdserverpb.Compare) (cond EtcdCondition) {
 	switch {
 	case cmp.Result == etcdserverpb.Compare_EQUAL && cmp.Target == etcdserverpb.Compare_MOD:
-		cond.Key = string(cmp.KeyBytes())
+		cond.Key = string(cmp.Key)
 	case cmp.Result == etcdserverpb.Compare_EQUAL && cmp.Target == etcdserverpb.Compare_CREATE:
-		cond.Key = string(cmp.KeyBytes())
+		cond.Key = string(cmp.Key)
 	default:
 		panic(fmt.Sprintf("Compare not supported, target: %q, result: %q", cmp.Target, cmp.Result))
 	}
