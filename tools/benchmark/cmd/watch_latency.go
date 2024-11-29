@@ -46,6 +46,7 @@ var (
 	watchLStreams           int
 	watchLWatchersPerStream int
 	watchLPrevKV            bool
+	watchLFragment          bool
 )
 
 func init() {
@@ -53,6 +54,7 @@ func init() {
 	watchLatencyCmd.Flags().IntVar(&watchLStreams, "streams", 10, "Total watch streams")
 	watchLatencyCmd.Flags().IntVar(&watchLWatchersPerStream, "watchers-per-stream", 10, "Total watchers per stream")
 	watchLatencyCmd.Flags().BoolVar(&watchLPrevKV, "prevkv", false, "PrevKV enabled on watch requests")
+	watchLatencyCmd.Flags().BoolVar(&watchLFragment, "fragment", false, "Fragment enabled on watch requests")
 
 	watchLatencyCmd.Flags().IntVar(&watchLPutTotal, "put-total", 1000, "Total number of put requests")
 	watchLatencyCmd.Flags().IntVar(&watchLPutRate, "put-rate", 100, "Number of keys to put per second")
@@ -141,6 +143,9 @@ func setupWatchChannels(key string) []clientv3.WatchChan {
 	opts := []clientv3.OpOption{}
 	if watchLPrevKV {
 		opts = append(opts, clientv3.WithPrevKV())
+	}
+	if watchLFragment {
+		opts = append(opts, clientv3.WithFragment())
 	}
 	wchs := make([]clientv3.WatchChan, len(streams)*watchLWatchersPerStream)
 	for i := 0; i < len(streams); i++ {
