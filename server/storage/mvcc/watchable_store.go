@@ -215,29 +215,19 @@ func (s *watchableStore) Restore(b backend.Backend) error {
 func (s *watchableStore) syncWatchersLoop() {
 	defer s.wg.Done()
 
-	waitDuration := 100 * time.Millisecond
+	baseWaitDuration := 25 * time.Millisecond
+	waitDuration := baseWaitDuration
 	delayTicker := time.NewTicker(waitDuration)
 	defer delayTicker.Stop()
 
 	for {
-		s.mu.RLock()
-		st := time.Now()
-		lastUnsyncedWatchers := s.unsynced.size()
-		s.mu.RUnlock()
-
-		unsyncedWatchers := 0
-		if lastUnsyncedWatchers > 0 {
-			unsyncedWatchers = s.syncWatchers()
+		unsynced := s.syncWatchers()
+		if unsynced == 0 {
+			waitDuration = baseWaitDuration
+		} else {
+			waitDuration = min(time.Second, waitDuration*2)
 		}
-		syncDuration := time.Since(st)
-
 		delayTicker.Reset(waitDuration)
-		// more work pending?
-		if unsyncedWatchers != 0 && lastUnsyncedWatchers > unsyncedWatchers {
-			// be fair to other store operations by yielding time taken
-			delayTicker.Reset(syncDuration)
-		}
-
 		select {
 		case <-delayTicker.C:
 		case <-s.stopc:
