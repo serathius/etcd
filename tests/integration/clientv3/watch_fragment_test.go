@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/client/pkg/v3/testutil"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	integration2 "go.etcd.io/etcd/tests/v3/framework/integration"
@@ -37,24 +38,39 @@ func TestWatchFragment(t *testing.T) {
 		clientRecvMsgSize int
 		fragmentEnabled   bool
 		expectEventCount  int
+		revisionCount     int
+		eventsPerRevision int
+		eventSize         int
 		expertError       string
 	}{
 		{
-			name:             "Within limit, without fragmentation, watch response can arrive",
-			expectEventCount: 10,
+			name:              "Within limit, without fragmentation, watch response can arrive",
+			revisionCount:     10,
+			eventsPerRevision: 1,
+			eventSize:         1024 * 1024,
+			expectEventCount:  10,
 		},
 		{
 			name:              "Outside limit without fragmentation, watch fails",
+			revisionCount:     10,
+			eventsPerRevision: 1,
+			eventSize:         1024 * 1024,
 			clientRecvMsgSize: 1.5 * 1024 * 1024,
 			expertError:       "code = ResourceExhausted desc = grpc: received message larger than max (",
 		},
 		{
-			name:             "Within limit, with fragmentation, watch response can arrive",
-			fragmentEnabled:  true,
-			expectEventCount: 10,
+			name:              "Within limit, with fragmentation, watch response can arrive",
+			revisionCount:     10,
+			eventsPerRevision: 1,
+			eventSize:         1024 * 1024,
+			fragmentEnabled:   true,
+			expectEventCount:  10,
 		},
 		{
 			name:              "Outside limit, with fragmentation, watch response can arrive",
+			revisionCount:     10,
+			eventsPerRevision: 1,
+			eventSize:         1024 * 1024,
 			fragmentEnabled:   true,
 			clientRecvMsgSize: 1.5 * 1024 * 1024,
 			expectEventCount:  10,
@@ -72,20 +88,13 @@ func TestWatchFragment(t *testing.T) {
 			defer clus.Terminate(t)
 
 			cli := clus.Client(0)
-			errc := make(chan error)
-			for i := 0; i < 10; i++ {
-				go func(i int) {
-					_, err := cli.Put(context.TODO(),
-						fmt.Sprint("foo", i),
-						strings.Repeat("a", 1024*1024),
-					)
-					errc <- err
-				}(i)
-			}
-			for i := 0; i < 10; i++ {
-				if err := <-errc; err != nil {
-					t.Fatalf("failed to put: %v", err)
+			for i := 0; i < tc.revisionCount; i++ {
+				var ops []clientv3.Op
+				for j := 0; j < tc.eventsPerRevision; j++ {
+					ops = append(ops, clientv3.OpPut(fmt.Sprintf("foo-%d-%d", i, j), strings.Repeat("a", tc.eventSize)))
 				}
+				_, err := cli.Txn(context.TODO()).Then(ops...).Commit()
+				require.NoError(t, err)
 			}
 
 			opts := []clientv3.OpOption{clientv3.WithPrefix(), clientv3.WithRev(1)}
