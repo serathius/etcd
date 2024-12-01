@@ -19,109 +19,93 @@ package clientv3test
 import (
 	"context"
 	"fmt"
-	"strings"
-	"testing"
-	"time"
-
+	"github.com/stretchr/testify/assert"
 	"go.etcd.io/etcd/client/pkg/v3/testutil"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	integration2 "go.etcd.io/etcd/tests/v3/framework/integration"
+	"strings"
+	"testing"
+	"time"
 )
-
-// TestWatchFragmentDisable ensures that large watch
-// response exceeding server-side request limit can
-// arrive even without watch response fragmentation.
-func TestWatchFragmentDisable(t *testing.T) {
-	testWatchFragment(t, false, false)
-}
-
-// TestWatchFragmentDisableWithGRPCLimit verifies
-// large watch response exceeding server-side request
-// limit and client-side gRPC response receive limit
-// cannot arrive without watch events fragmentation,
-// because multiple events exceed client-side gRPC
-// response receive limit.
-func TestWatchFragmentDisableWithGRPCLimit(t *testing.T) {
-	testWatchFragment(t, false, true)
-}
-
-// TestWatchFragmentEnable ensures that large watch
-// response exceeding server-side request limit arrive
-// with watch response fragmentation.
-func TestWatchFragmentEnable(t *testing.T) {
-	testWatchFragment(t, true, false)
-}
-
-// TestWatchFragmentEnableWithGRPCLimit verifies
-// large watch response exceeding server-side request
-// limit and client-side gRPC response receive limit
-// can arrive only when watch events are fragmented.
-func TestWatchFragmentEnableWithGRPCLimit(t *testing.T) {
-	testWatchFragment(t, true, true)
-}
 
 // testWatchFragment triggers watch response that spans over multiple
 // revisions exceeding server request limits when combined.
-func testWatchFragment(t *testing.T, fragment, exceedRecvLimit bool) {
-	integration2.BeforeTest(t)
+func TestWatchFragment(t *testing.T) {
 
-	cfg := &integration2.ClusterConfig{
-		Size:            1,
-		MaxRequestBytes: 1.5 * 1024 * 1024,
+	tcs := []struct {
+		name              string
+		clientRecvMsgSize int
+		fragmentEnabled   bool
+		expectEventCount  int
+		expertError       string
+	}{
+		{
+			name:             "Within limit, without fragmentation, watch response can arrive",
+			expectEventCount: 10,
+		},
+		{
+			name:              "Outside limit without fragmentation, watch fails",
+			clientRecvMsgSize: 1.5 * 1024 * 1024,
+			expertError:       "code = ResourceExhausted desc = grpc: received message larger than max (",
+		},
+		{
+			name:             "Within limit, with fragmentation, watch response can arrive",
+			fragmentEnabled:  true,
+			expectEventCount: 10,
+		},
+		{
+			name:              "Outside limit, with fragmentation, watch response can arrive",
+			fragmentEnabled:   true,
+			clientRecvMsgSize: 1.5 * 1024 * 1024,
+			expectEventCount:  10,
+		},
 	}
-	if exceedRecvLimit {
-		cfg.ClientMaxCallRecvMsgSize = 1.5 * 1024 * 1024
-	}
-	clus := integration2.NewCluster(t, cfg)
-	defer clus.Terminate(t)
-
-	cli := clus.Client(0)
-	errc := make(chan error)
-	for i := 0; i < 10; i++ {
-		go func(i int) {
-			_, err := cli.Put(context.TODO(),
-				fmt.Sprint("foo", i),
-				strings.Repeat("a", 1024*1024),
-			)
-			errc <- err
-		}(i)
-	}
-	for i := 0; i < 10; i++ {
-		if err := <-errc; err != nil {
-			t.Fatalf("failed to put: %v", err)
-		}
-	}
-
-	opts := []clientv3.OpOption{clientv3.WithPrefix(), clientv3.WithRev(1)}
-	if fragment {
-		opts = append(opts, clientv3.WithFragment())
-	}
-	wch := cli.Watch(context.TODO(), "foo", opts...)
-
-	// expect 10 MiB watch response
-	select {
-	case ws := <-wch:
-		// without fragment, should exceed gRPC client receive limit
-		if !fragment && exceedRecvLimit {
-			if len(ws.Events) != 0 {
-				t.Fatalf("expected 0 events with watch fragmentation, got %d", len(ws.Events))
+	for _, tc := range tcs {
+		t.Run(tc.name, func(t *testing.T) {
+			integration2.BeforeTest(t)
+			cfg := &integration2.ClusterConfig{
+				Size:                     1,
+				MaxRequestBytes:          uint(tc.clientRecvMsgSize),
+				ClientMaxCallRecvMsgSize: tc.clientRecvMsgSize,
 			}
-			exp := "code = ResourceExhausted desc = grpc: received message larger than max ("
-			if !strings.Contains(ws.Err().Error(), exp) {
-				t.Fatalf("expected 'ResourceExhausted' error, got %v", ws.Err())
+			clus := integration2.NewCluster(t, cfg)
+			defer clus.Terminate(t)
+
+			cli := clus.Client(0)
+			errc := make(chan error)
+			for i := 0; i < 10; i++ {
+				go func(i int) {
+					_, err := cli.Put(context.TODO(),
+						fmt.Sprint("foo", i),
+						strings.Repeat("a", 1024*1024),
+					)
+					errc <- err
+				}(i)
 			}
-			return
-		}
+			for i := 0; i < 10; i++ {
+				if err := <-errc; err != nil {
+					t.Fatalf("failed to put: %v", err)
+				}
+			}
 
-		// still expect merged watch events
-		if len(ws.Events) != 10 {
-			t.Fatalf("expected 10 events with watch fragmentation, got %d", len(ws.Events))
-		}
-		if ws.Err() != nil {
-			t.Fatalf("unexpected error %v", ws.Err())
-		}
+			opts := []clientv3.OpOption{clientv3.WithPrefix(), clientv3.WithRev(1)}
+			if tc.fragmentEnabled {
+				opts = append(opts, clientv3.WithFragment())
+			}
+			wch := cli.Watch(context.TODO(), "foo", opts...)
 
-	case <-time.After(testutil.RequestTimeout):
-		t.Fatalf("took too long to receive events")
+			// expect 10 MiB watch response
+			select {
+			case ws := <-wch:
+				assert.Len(t, ws.Events, tc.expectEventCount)
+				if tc.expertError != "" {
+					assert.ErrorContains(t, ws.Err(), tc.expertError)
+				} else {
+					assert.NoError(t, ws.Err())
+				}
+			case <-time.After(testutil.RequestTimeout):
+				t.Fatalf("took too long to receive events")
+			}
+		})
 	}
 }
