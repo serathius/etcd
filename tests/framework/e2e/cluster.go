@@ -534,8 +534,9 @@ func (cfg *EtcdProcessClusterConfig) SetInitialOrDiscovery(serverCfg *EtcdServer
 }
 
 func (cfg *EtcdProcessClusterConfig) EtcdServerProcessConfig(tb testing.TB, i int) *EtcdServerProcessConfig {
-	var curls []string
-	var curl string
+	serverCfg := cfg.ServerConfig
+	var curls []url.URL
+	var curl url.URL
 	port := cfg.BasePort + 5*i
 	clientPort := port
 	peerPort := port + 1
@@ -545,10 +546,10 @@ func (cfg *EtcdProcessClusterConfig) EtcdServerProcessConfig(tb testing.TB, i in
 
 	if cfg.Client.ConnectionType == ClientTLSAndNonTLS {
 		curl = clientURL(cfg.ClientScheme(), clientPort, ClientNonTLS)
-		curls = []string{curl, clientURL(cfg.ClientScheme(), clientPort, ClientTLS)}
+		curls = []url.URL{curl, clientURL(cfg.ClientScheme(), clientPort, ClientTLS)}
 	} else {
 		curl = clientURL(cfg.ClientScheme(), clientPort, cfg.Client.ConnectionType)
-		curls = []string{curl}
+		curls = []url.URL{curl}
 	}
 
 	peerListenURL := url.URL{Scheme: cfg.PeerScheme(), Host: fmt.Sprintf("localhost:%d", peerPort)}
@@ -566,7 +567,7 @@ func (cfg *EtcdProcessClusterConfig) EtcdServerProcessConfig(tb testing.TB, i in
 		}
 	}
 
-	name := fmt.Sprintf("%s-test-%d", testNameCleanRegex.ReplaceAllString(tb.Name(), ""), i)
+	serverCfg.Name = fmt.Sprintf("%s-test-%d", testNameCleanRegex.ReplaceAllString(tb.Name(), ""), i)
 
 	var dataDirPath string
 	if cfg.BaseDataDirPath == "" {
@@ -580,45 +581,31 @@ func (cfg *EtcdProcessClusterConfig) EtcdServerProcessConfig(tb testing.TB, i in
 		dataDirPath = filepath.Join(cfg.BaseDataDirPath, fmt.Sprintf("member-%d", i))
 	}
 
-	args := []string{
-		"--name=" + name,
-		"--listen-client-urls=" + strings.Join(curls, ","),
-		"--advertise-client-urls=" + strings.Join(curls, ","),
-		"--listen-peer-urls=" + peerListenURL.String(),
-		"--initial-advertise-peer-urls=" + peerAdvertiseURL.String(),
-		"--initial-cluster-token=" + cfg.ServerConfig.InitialClusterToken,
-		"--data-dir=" + dataDirPath,
-		"--snapshot-count=" + fmt.Sprintf("%d", cfg.ServerConfig.SnapshotCount),
-	}
-	var clientHTTPURL string
+	serverCfg.ListenClientUrls = curls
+	serverCfg.AdvertiseClientUrls = curls
+	serverCfg.ListenPeerUrls = []url.URL{peerListenURL}
+	serverCfg.AdvertisePeerUrls = []url.URL{peerAdvertiseURL}
+	serverCfg.Dir = dataDirPath
+
+	var clientHTTPURL url.URL 
 	if cfg.ClientHTTPSeparate {
 		clientHTTPURL = clientURL(cfg.ClientScheme(), clientHTTPPort, cfg.Client.ConnectionType)
-		args = append(args, "--listen-client-http-urls="+clientHTTPURL)
+		serverCfg.ListenClientHttpUrls = []url.URL{clientHTTPURL}
+	}
+	var metricsURL string
+	if cfg.MetricsURLScheme != "" {
+		murl := url.URL{
+			Scheme: cfg.MetricsURLScheme,
+			Host:   fmt.Sprintf("localhost:%d", metricsPort),
+		}
+		metricsURL = murl.String()
+		serverCfg.ListenMetricsUrls = []url.URL{murl}
 	}
 
-	if cfg.ServerConfig.ForceNewCluster {
-		args = append(args, "--force-new-cluster=true")
-	}
-	if cfg.ServerConfig.QuotaBackendBytes > 0 {
-		args = append(args,
-			"--quota-backend-bytes="+fmt.Sprintf("%d", cfg.ServerConfig.QuotaBackendBytes),
-		)
-	}
-	if !cfg.ServerConfig.StrictReconfigCheck {
-		args = append(args, "--strict-reconfig-check=false")
-	}
+	args := []string{}
 	if cfg.EnableV2 {
 		args = append(args, "--enable-v2=true")
 	}
-	var murl string
-	if cfg.MetricsURLScheme != "" {
-		murl = (&url.URL{
-			Scheme: cfg.MetricsURLScheme,
-			Host:   fmt.Sprintf("localhost:%d", metricsPort),
-		}).String()
-		args = append(args, "--listen-metrics-urls="+murl)
-	}
-
 	args = append(args, cfg.TLSArgs()...)
 
 	if cfg.Discovery != "" {
@@ -648,7 +635,7 @@ func (cfg *EtcdProcessClusterConfig) EtcdServerProcessConfig(tb testing.TB, i in
 	}
 
 	defaultValues := values(*embed.NewConfig())
-	overrideValues := values(cfg.ServerConfig)
+	overrideValues := values(serverCfg)
 	for flag, value := range overrideValues {
 		if defaultValue := defaultValues[flag]; value == "" || value == defaultValue {
 			continue
@@ -675,12 +662,12 @@ func (cfg *EtcdProcessClusterConfig) EtcdServerProcessConfig(tb testing.TB, i in
 		Client:              cfg.Client,
 		DataDirPath:         dataDirPath,
 		KeepDataDir:         cfg.KeepDataDir,
-		Name:                name,
+		Name:                serverCfg.Name,
 		PeerURL:             peerAdvertiseURL,
-		ClientURL:           curl,
-		ClientHTTPURL:       clientHTTPURL,
-		MetricsURL:          murl,
-		InitialToken:        cfg.ServerConfig.InitialClusterToken,
+		ClientURL:           curl.String(),
+		ClientHTTPURL:       clientHTTPURL.String(),
+		MetricsURL:          metricsURL,
+		InitialToken:        serverCfg.InitialClusterToken,
 		GoFailPort:          gofailPort,
 		GoFailClientTimeout: cfg.GoFailClientTimeout,
 		Proxy:               proxyCfg,
@@ -693,22 +680,18 @@ func values(cfg embed.Config) map[string]string {
 	cfg.AddFlags(fs)
 	values := map[string]string{}
 	fs.VisitAll(func(f *flag.Flag) {
-		value := f.Value.String()
-		if value == "false" || value == "0" {
-			value = ""
-		}
-		values[f.Name] = value
+		values[f.Name] = f.Value.String()
 	})
 	return values
 }
 
-func clientURL(scheme string, port int, connType ClientConnType) string {
+func clientURL(scheme string, port int, connType ClientConnType) url.URL {
 	curlHost := fmt.Sprintf("localhost:%d", port)
 	switch connType {
 	case ClientNonTLS:
-		return (&url.URL{Scheme: scheme, Host: curlHost}).String()
+		return url.URL{Scheme: scheme, Host: curlHost}
 	case ClientTLS:
-		return (&url.URL{Scheme: ToTLS(scheme), Host: curlHost}).String()
+		return url.URL{Scheme: ToTLS(scheme), Host: curlHost}
 	default:
 		panic(fmt.Sprintf("Unsupported connection type %v", connType))
 	}

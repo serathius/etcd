@@ -43,7 +43,6 @@ func TestEtcdServerProcessConfig(t *testing.T) {
 				"--listen-peer-urls=http://localhost:1",
 				"--initial-advertise-peer-urls=http://localhost:1",
 				"--initial-cluster-token=new",
-				"--snapshot-count=10000",
 			},
 		},
 		{
