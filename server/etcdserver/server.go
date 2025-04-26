@@ -208,13 +208,7 @@ type Server interface {
 
 // EtcdServer is the production implementation of the Server interface
 type EtcdServer struct {
-	// inflightSnapshots holds count the number of snapshots currently inflight.
-	inflightSnapshots int64  // must use atomic operations to access; keep 64-bit aligned.
-	appliedIndex      uint64 // must use atomic operations to access; keep 64-bit aligned.
-	committedIndex    uint64 // must use atomic operations to access; keep 64-bit aligned.
-	term              uint64 // must use atomic operations to access; keep 64-bit aligned.
-	lead              uint64 // must use atomic operations to access; keep 64-bit aligned.
-
+	state        State
 	consistIndex cindex.ConsistentIndexer // consistIndex is used to get/set/save consistentIndex
 	r            raftNode                 // uses 64-bit atomics; keep 64-bit aligned.
 
@@ -298,6 +292,15 @@ type EtcdServer struct {
 	// TODO: Replace with flush db in v3.7 assuming v3.6 bootstraps from db file.
 	forceDiskSnapshot bool
 	corruptionChecker CorruptionChecker
+}
+
+type State struct {
+	// inflightSnapshots holds count the number of snapshots currently inflight.
+	inflightSnapshots int64  // must use atomic operations to access; keep 64-bit aligned.
+	appliedIndex      uint64 // must use atomic operations to access; keep 64-bit aligned.
+	committedIndex    uint64 // must use atomic operations to access; keep 64-bit aligned.
+	term              uint64 // must use atomic operations to access; keep 64-bit aligned.
+	lead              uint64 // must use atomic operations to access; keep 64-bit aligned.
 }
 
 // NewServer creates a new EtcdServer from the supplied configuration. The
@@ -642,7 +645,9 @@ func (s *EtcdServer) purgeFile() {
 
 func (s *EtcdServer) Cluster() api.Cluster { return s.cluster }
 
-func (s *EtcdServer) ApplyWait() <-chan struct{} { return s.applyWait.Wait(s.getCommittedIndex()) }
+func (s *EtcdServer) ApplyWait() <-chan struct{} {
+	return s.applyWait.Wait(s.state.getCommittedIndex())
+}
 
 type ServerPeer interface {
 	ServerV2
@@ -775,8 +780,8 @@ func (s *EtcdServer) run() {
 	sched := schedule.NewFIFOScheduler(lg)
 
 	rh := &raftReadyHandler{
-		getLead:    func() (lead uint64) { return s.getLead() },
-		updateLead: func(lead uint64) { s.setLead(lead) },
+		getLead:    func() (lead uint64) { return s.state.getLead() },
+		updateLead: func(lead uint64) { s.state.setLead(lead) },
 		updateLeadership: func(newLeader bool) {
 			if !s.isLeader() {
 				if s.lessor != nil {
@@ -806,9 +811,9 @@ func (s *EtcdServer) run() {
 			}
 		},
 		updateCommittedIndex: func(ci uint64) {
-			cci := s.getCommittedIndex()
+			cci := s.state.getCommittedIndex()
 			if ci > cci {
-				s.setCommittedIndex(ci)
+				s.state.setCommittedIndex(ci)
 			}
 		},
 	}
@@ -1653,35 +1658,35 @@ func (s *EtcdServer) UpdateMember(ctx context.Context, memb membership.Member) (
 	return s.configure(ctx, cc)
 }
 
-func (s *EtcdServer) setCommittedIndex(v uint64) {
+func (s *State) setCommittedIndex(v uint64) {
 	atomic.StoreUint64(&s.committedIndex, v)
 }
 
-func (s *EtcdServer) getCommittedIndex() uint64 {
+func (s *State) getCommittedIndex() uint64 {
 	return atomic.LoadUint64(&s.committedIndex)
 }
 
-func (s *EtcdServer) setAppliedIndex(v uint64) {
+func (s *State) setAppliedIndex(v uint64) {
 	atomic.StoreUint64(&s.appliedIndex, v)
 }
 
-func (s *EtcdServer) getAppliedIndex() uint64 {
+func (s *State) getAppliedIndex() uint64 {
 	return atomic.LoadUint64(&s.appliedIndex)
 }
 
-func (s *EtcdServer) setTerm(v uint64) {
+func (s *State) setTerm(v uint64) {
 	atomic.StoreUint64(&s.term, v)
 }
 
-func (s *EtcdServer) getTerm() uint64 {
+func (s *State) getTerm() uint64 {
 	return atomic.LoadUint64(&s.term)
 }
 
-func (s *EtcdServer) setLead(v uint64) {
+func (s *State) setLead(v uint64) {
 	atomic.StoreUint64(&s.lead, v)
 }
 
-func (s *EtcdServer) getLead() uint64 {
+func (s *State) getLead() uint64 {
 	return atomic.LoadUint64(&s.lead)
 }
 
@@ -1707,15 +1712,15 @@ func (s *EtcdServer) MemberId() types.ID { return s.MemberID() }
 
 func (s *EtcdServer) MemberID() types.ID { return s.memberID }
 
-func (s *EtcdServer) Leader() types.ID { return types.ID(s.getLead()) }
+func (s *EtcdServer) Leader() types.ID { return types.ID(s.state.getLead()) }
 
-func (s *EtcdServer) Lead() uint64 { return s.getLead() }
+func (s *EtcdServer) Lead() uint64 { return s.state.getLead() }
 
-func (s *EtcdServer) CommittedIndex() uint64 { return s.getCommittedIndex() }
+func (s *EtcdServer) CommittedIndex() uint64 { return s.state.getCommittedIndex() }
 
-func (s *EtcdServer) AppliedIndex() uint64 { return s.getAppliedIndex() }
+func (s *EtcdServer) AppliedIndex() uint64 { return s.state.getAppliedIndex() }
 
-func (s *EtcdServer) Term() uint64 { return s.getTerm() }
+func (s *EtcdServer) Term() uint64 { return s.state.getTerm() }
 
 type confChangeResponse struct {
 	membs        []*membership.Member
@@ -1822,7 +1827,7 @@ func (s *EtcdServer) publishV3(timeout time.Duration) {
 }
 
 func (s *EtcdServer) sendMergedSnap(merged snap.Message) {
-	atomic.AddInt64(&s.inflightSnapshots, 1)
+	atomic.AddInt64(&s.state.inflightSnapshots, 1)
 
 	lg := s.Logger()
 	fields := []zap.Field{
@@ -1850,7 +1855,7 @@ func (s *EtcdServer) sendMergedSnap(merged snap.Message) {
 				}
 			}
 
-			atomic.AddInt64(&s.inflightSnapshots, -1)
+			atomic.AddInt64(&s.state.inflightSnapshots, -1)
 
 			lg.Info("sent merged snapshot", append(fields, zap.Duration("took", time.Since(now)))...)
 
@@ -1891,16 +1896,16 @@ func (s *EtcdServer) apply(
 		case raftpb.EntryNormal:
 			// gofail: var beforeApplyOneEntryNormal struct{}
 			s.applyEntryNormal(&e, shouldApplyV3)
-			s.setAppliedIndex(e.Index)
-			s.setTerm(e.Term)
+			s.state.setAppliedIndex(e.Index)
+			s.state.setTerm(e.Term)
 
 		case raftpb.EntryConfChange:
 			// gofail: var beforeApplyOneConfChange struct{}
 			var cc raftpb.ConfChange
 			pbutil.MustUnmarshal(&cc, e.Data)
 			removedSelf, err := s.applyConfChange(cc, confState, shouldApplyV3)
-			s.setAppliedIndex(e.Index)
-			s.setTerm(e.Term)
+			s.state.setAppliedIndex(e.Index)
+			s.state.setTerm(e.Term)
 			shouldStop = shouldStop || removedSelf
 			s.w.Trigger(cc.ID, &confChangeResponse{s.cluster.Members(), raftAdvancedC, err})
 
@@ -2201,7 +2206,7 @@ func (s *EtcdServer) compactRaftLog(snapi uint64) {
 	// the snapshot sent to catch up. If we do not pause compaction, the log entries right after
 	// the snapshot sent might already be compacted. It happens when the snapshot takes long time
 	// to send and save. Pausing compaction avoids triggering a snapshot sending cycle.
-	if atomic.LoadInt64(&s.inflightSnapshots) != 0 {
+	if atomic.LoadInt64(&s.state.inflightSnapshots) != 0 {
 		lg.Info("skip compaction since there is an inflight snapshot")
 		return
 	}
@@ -2426,7 +2431,7 @@ func (s *EtcdServer) parseProposeCtxErr(err error, start time.Time) error {
 		if start.After(prevLeadLost) && start.Before(curLeadElected) {
 			return errors.ErrTimeoutDueToLeaderFail
 		}
-		lead := types.ID(s.getLead())
+		lead := types.ID(s.state.getLead())
 		switch lead {
 		case types.ID(raft.None):
 			// TODO: return error to specify it happens because the cluster does not have leader now

@@ -737,8 +737,8 @@ func (s *EtcdServer) doSerialize(ctx context.Context, chk func(*auth.AuthInfo) e
 }
 
 func (s *EtcdServer) processInternalRaftRequestOnce(ctx context.Context, r pb.InternalRaftRequest) (*apply2.Result, error) {
-	ai := s.getAppliedIndex()
-	ci := s.getCommittedIndex()
+	ai := s.state.getAppliedIndex()
+	ci := s.state.getCommittedIndex()
 	if ci > ai+maxGapBetweenApplyAndCommitIndex {
 		return nil, errors.ErrTooManyRequests
 	}
@@ -837,7 +837,7 @@ func (s *EtcdServer) linearizableReadLoop() {
 
 		trace.AddField(traceutil.Field{Key: "readStateIndex", Value: confirmedIndex})
 
-		appliedIndex := s.getAppliedIndex()
+		appliedIndex := s.state.getAppliedIndex()
 		trace.AddField(traceutil.Field{Key: "appliedIndex", Value: strconv.FormatUint(appliedIndex, 10)})
 
 		if appliedIndex < confirmedIndex {
