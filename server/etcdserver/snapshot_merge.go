@@ -51,7 +51,7 @@ func (s *EtcdServer) createMergedSnapshotMessage(m raftpb.Message, snapt, snapi 
 	}
 	m.Snapshot = &snapshot
 
-	verifySnapshotIndex(snapshot, s.consistIndex.ConsistentIndex())
+	verifySnapshotIndex(snapshot, s.state.consistIndex.ConsistentIndex())
 
 	return *snap.NewMessage(m, rc, dbsnap.Size())
 }

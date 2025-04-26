@@ -98,15 +98,17 @@ func TestApplyRepeat(t *testing.T) {
 		transport:   newNopTransporter(),
 	})
 	s := &EtcdServer{
-		lgMu:         new(sync.RWMutex),
-		lg:           zaptest.NewLogger(t),
-		r:            *r,
-		v2store:      st,
-		cluster:      cl,
-		reqIDGen:     idutil.NewGenerator(0, time.Time{}),
-		SyncTicker:   &time.Ticker{},
-		consistIndex: cindex.NewFakeConsistentIndex(0),
-		uberApply:    uberApplierMock{},
+		lgMu:       new(sync.RWMutex),
+		lg:         zaptest.NewLogger(t),
+		r:          *r,
+		v2store:    st,
+		cluster:    cl,
+		reqIDGen:   idutil.NewGenerator(0, time.Time{}),
+		SyncTicker: &time.Ticker{},
+		state: State{
+			consistIndex: cindex.NewFakeConsistentIndex(0),
+		},
+		uberApply: uberApplierMock{},
 	}
 	s.start()
 	req := &pb.InternalRaftRequest{
@@ -165,13 +167,15 @@ func TestV2SetMemberAttributes(t *testing.T) {
 	}
 
 	srv := &EtcdServer{
-		lgMu:         new(sync.RWMutex),
-		lg:           zaptest.NewLogger(t),
-		v2store:      mockstore.NewRecorder(),
-		cluster:      cl,
-		consistIndex: cindex.NewConsistentIndex(be),
-		w:            wait.New(),
-		Cfg:          cfg,
+		lgMu:    new(sync.RWMutex),
+		lg:      zaptest.NewLogger(t),
+		v2store: mockstore.NewRecorder(),
+		cluster: cl,
+		state: State{
+			consistIndex: cindex.NewFakeConsistentIndex(0),
+		},
+		w:   wait.New(),
+		Cfg: cfg,
 	}
 	as, err := v3alarm.NewAlarmStore(srv.lg, schema.NewAlarmBackend(srv.lg, be))
 	if err != nil {
@@ -211,13 +215,15 @@ func TestV2SetClusterVersion(t *testing.T) {
 	}
 
 	srv := &EtcdServer{
-		lgMu:         new(sync.RWMutex),
-		lg:           zaptest.NewLogger(t),
-		v2store:      mockstore.NewRecorder(),
-		cluster:      cl,
-		consistIndex: cindex.NewConsistentIndex(be),
-		w:            wait.New(),
-		Cfg:          cfg,
+		lgMu:    new(sync.RWMutex),
+		lg:      zaptest.NewLogger(t),
+		v2store: mockstore.NewRecorder(),
+		cluster: cl,
+		state: State{
+			consistIndex: cindex.NewFakeConsistentIndex(0),
+		},
+		w:   wait.New(),
+		Cfg: cfg,
 	}
 	as, err := v3alarm.NewAlarmStore(srv.lg, schema.NewAlarmBackend(srv.lg, be))
 	if err != nil {
@@ -249,7 +255,7 @@ func TestApplyConfStateWithRestart(t *testing.T) {
 	srv := newServer(t, n)
 	defer srv.Cleanup()
 
-	assert.Equal(t, uint64(0), srv.consistIndex.ConsistentIndex())
+	assert.Equal(t, uint64(0), srv.state.consistIndex.ConsistentIndex())
 
 	var nodeID uint64 = 1
 	memberData, err := json.Marshal(&membership.Member{ID: types.ID(nodeID), RaftAttributes: membership.RaftAttributes{PeerURLs: []string{""}}})
@@ -340,15 +346,17 @@ func newServer(t *testing.T, recorder *nodeRecorder) *EtcdServer {
 		betesting.Close(t, be)
 	})
 	srv := &EtcdServer{
-		lgMu:         new(sync.RWMutex),
-		lg:           zaptest.NewLogger(t),
-		r:            *newRaftNode(raftNodeConfig{lg: lg, Node: recorder}),
-		cluster:      membership.NewCluster(lg),
-		consistIndex: cindex.NewConsistentIndex(be),
+		lgMu:    new(sync.RWMutex),
+		lg:      zaptest.NewLogger(t),
+		r:       *newRaftNode(raftNodeConfig{lg: lg, Node: recorder}),
+		cluster: membership.NewCluster(lg),
+		state: State{
+			consistIndex: cindex.NewConsistentIndex(be),
+		},
 	}
 	srv.cluster.SetBackend(schema.NewMembershipBackend(lg, be))
 	srv.cluster.SetStore(v2store.New())
-	srv.beHooks = serverstorage.NewBackendHooks(lg, srv.consistIndex)
+	srv.beHooks = serverstorage.NewBackendHooks(lg, srv.state.consistIndex)
 	srv.r.transport = newNopTransporter()
 	srv.w = mockwait.NewNop()
 	return srv
@@ -514,14 +522,16 @@ func TestApplyConfigChangeUpdatesConsistIndex(t *testing.T) {
 
 	ci := cindex.NewConsistentIndex(be)
 	srv := &EtcdServer{
-		lgMu:         new(sync.RWMutex),
-		lg:           lg,
-		memberID:     1,
-		r:            *realisticRaftNode(lg, 1, nil),
-		cluster:      cl,
-		w:            wait.New(),
-		consistIndex: ci,
-		beHooks:      serverstorage.NewBackendHooks(lg, ci),
+		lgMu:     new(sync.RWMutex),
+		lg:       lg,
+		memberID: 1,
+		r:        *realisticRaftNode(lg, 1, nil),
+		cluster:  cl,
+		w:        wait.New(),
+		state: State{
+			consistIndex: ci,
+		},
+		beHooks: serverstorage.NewBackendHooks(lg, ci),
 	}
 	defer srv.r.raftNodeConfig.Stop()
 
@@ -548,7 +558,7 @@ func TestApplyConfigChangeUpdatesConsistIndex(t *testing.T) {
 	raftAdvancedC := make(chan struct{}, 1)
 	raftAdvancedC <- struct{}{}
 	_, appliedi, _ := srv.apply(ents, &raftpb.ConfState{}, raftAdvancedC)
-	consistIndex := srv.consistIndex.ConsistentIndex()
+	consistIndex := srv.state.consistIndex.ConsistentIndex()
 	assert.Equal(t, uint64(2), appliedi)
 
 	t.Run("verify-backend", func(t *testing.T) {
@@ -608,14 +618,16 @@ func TestApplyMultiConfChangeShouldStop(t *testing.T) {
 	})
 	ci := cindex.NewFakeConsistentIndex(0)
 	srv := &EtcdServer{
-		lgMu:         new(sync.RWMutex),
-		lg:           lg,
-		memberID:     2,
-		r:            *r,
-		cluster:      cl,
-		w:            wait.New(),
-		consistIndex: ci,
-		beHooks:      serverstorage.NewBackendHooks(lg, ci),
+		lgMu:     new(sync.RWMutex),
+		lg:       lg,
+		memberID: 2,
+		r:        *r,
+		cluster:  cl,
+		w:        wait.New(),
+		state: State{
+			consistIndex: ci,
+		},
+		beHooks: serverstorage.NewBackendHooks(lg, ci),
 	}
 	var ents []raftpb.Entry
 	for i := 1; i <= 4; i++ {
@@ -659,11 +671,13 @@ func TestSnapshotDisk(t *testing.T) {
 		storage:     p,
 	})
 	srv := &EtcdServer{
-		lgMu:         new(sync.RWMutex),
-		lg:           zaptest.NewLogger(t),
-		r:            *r,
-		v2store:      st,
-		consistIndex: cindex.NewConsistentIndex(be),
+		lgMu:    new(sync.RWMutex),
+		lg:      zaptest.NewLogger(t),
+		r:       *r,
+		v2store: st,
+		state: State{
+			consistIndex: cindex.NewConsistentIndex(be),
+		},
 	}
 	srv.kv = mvcc.New(zaptest.NewLogger(t), be, &lease.FakeLessor{}, mvcc.StoreConfig{})
 	defer func() {
@@ -710,11 +724,13 @@ func TestSnapshotMemory(t *testing.T) {
 		storage:     p,
 	})
 	srv := &EtcdServer{
-		lgMu:         new(sync.RWMutex),
-		lg:           zaptest.NewLogger(t),
-		r:            *r,
-		v2store:      st,
-		consistIndex: cindex.NewConsistentIndex(be),
+		lgMu:    new(sync.RWMutex),
+		lg:      zaptest.NewLogger(t),
+		r:       *r,
+		v2store: st,
+		state: State{
+			consistIndex: cindex.NewConsistentIndex(be),
+		},
 	}
 	srv.kv = mvcc.New(zaptest.NewLogger(t), be, &lease.FakeLessor{}, mvcc.StoreConfig{})
 	defer func() {
@@ -783,16 +799,18 @@ func TestSnapshotOrdering(t *testing.T) {
 	}
 
 	s := &EtcdServer{
-		lgMu:         new(sync.RWMutex),
-		lg:           lg,
-		Cfg:          cfg,
-		r:            *r,
-		v2store:      st,
-		snapshotter:  snap.New(lg, snapdir),
-		cluster:      cl,
-		SyncTicker:   &time.Ticker{},
-		consistIndex: ci,
-		beHooks:      serverstorage.NewBackendHooks(lg, ci),
+		lgMu:        new(sync.RWMutex),
+		lg:          lg,
+		Cfg:         cfg,
+		r:           *r,
+		v2store:     st,
+		snapshotter: snap.New(lg, snapdir),
+		cluster:     cl,
+		SyncTicker:  &time.Ticker{},
+		state: State{
+			consistIndex: ci,
+		},
+		beHooks: serverstorage.NewBackendHooks(lg, ci),
 	}
 
 	s.kv = mvcc.New(lg, be, &lease.FakeLessor{}, mvcc.StoreConfig{})
@@ -881,12 +899,14 @@ func TestConcurrentApplyAndSnapshotV3(t *testing.T) {
 			SnapshotCatchUpEntries: DefaultSnapshotCatchUpEntries,
 			ServerFeatureGate:      features.NewDefaultServerFeatureGate("test", lg),
 		},
-		r:                 *r,
-		v2store:           st,
-		snapshotter:       snap.New(lg, testdir),
-		cluster:           cl,
-		SyncTicker:        &time.Ticker{},
-		consistIndex:      ci,
+		r:           *r,
+		v2store:     st,
+		snapshotter: snap.New(lg, testdir),
+		cluster:     cl,
+		SyncTicker:  &time.Ticker{},
+		state: State{
+			consistIndex: ci,
+		},
 		beHooks:           serverstorage.NewBackendHooks(lg, ci),
 		firstCommitInTerm: notify.NewNotifier(),
 		lessor:            &lease.FakeLessor{},
@@ -974,15 +994,17 @@ func TestAddMember(t *testing.T) {
 		transport:   newNopTransporter(),
 	})
 	s := &EtcdServer{
-		lgMu:         new(sync.RWMutex),
-		lg:           lg,
-		r:            *r,
-		v2store:      st,
-		cluster:      cl,
-		reqIDGen:     idutil.NewGenerator(0, time.Time{}),
-		SyncTicker:   &time.Ticker{},
-		consistIndex: cindex.NewFakeConsistentIndex(0),
-		beHooks:      serverstorage.NewBackendHooks(lg, nil),
+		lgMu:       new(sync.RWMutex),
+		lg:         lg,
+		r:          *r,
+		v2store:    st,
+		cluster:    cl,
+		reqIDGen:   idutil.NewGenerator(0, time.Time{}),
+		SyncTicker: &time.Ticker{},
+		state: State{
+			consistIndex: cindex.NewFakeConsistentIndex(0),
+		},
+		beHooks: serverstorage.NewBackendHooks(lg, nil),
 	}
 	s.start()
 	m := membership.Member{ID: 1234, RaftAttributes: membership.RaftAttributes{PeerURLs: []string{"foo"}}}
@@ -1030,16 +1052,18 @@ func TestProcessIgnoreMismatchMessage(t *testing.T) {
 	})
 	defer r.raftNodeConfig.Stop()
 	s := &EtcdServer{
-		lgMu:         new(sync.RWMutex),
-		lg:           lg,
-		memberID:     1,
-		r:            *r,
-		v2store:      st,
-		cluster:      cl,
-		reqIDGen:     idutil.NewGenerator(0, time.Time{}),
-		SyncTicker:   &time.Ticker{},
-		consistIndex: cindex.NewFakeConsistentIndex(0),
-		beHooks:      serverstorage.NewBackendHooks(lg, nil),
+		lgMu:       new(sync.RWMutex),
+		lg:         lg,
+		memberID:   1,
+		r:          *r,
+		v2store:    st,
+		cluster:    cl,
+		reqIDGen:   idutil.NewGenerator(0, time.Time{}),
+		SyncTicker: &time.Ticker{},
+		state: State{
+			consistIndex: cindex.NewFakeConsistentIndex(0),
+		},
+		beHooks: serverstorage.NewBackendHooks(lg, nil),
 	}
 	// Mock a mad switch dispatching messages to wrong node.
 	m := raftpb.Message{
@@ -1081,15 +1105,17 @@ func TestRemoveMember(t *testing.T) {
 		transport:   newNopTransporter(),
 	})
 	s := &EtcdServer{
-		lgMu:         new(sync.RWMutex),
-		lg:           zaptest.NewLogger(t),
-		r:            *r,
-		v2store:      st,
-		cluster:      cl,
-		reqIDGen:     idutil.NewGenerator(0, time.Time{}),
-		SyncTicker:   &time.Ticker{},
-		consistIndex: cindex.NewFakeConsistentIndex(0),
-		beHooks:      serverstorage.NewBackendHooks(lg, nil),
+		lgMu:       new(sync.RWMutex),
+		lg:         zaptest.NewLogger(t),
+		r:          *r,
+		v2store:    st,
+		cluster:    cl,
+		reqIDGen:   idutil.NewGenerator(0, time.Time{}),
+		SyncTicker: &time.Ticker{},
+		state: State{
+			consistIndex: cindex.NewFakeConsistentIndex(0),
+		},
+		beHooks: serverstorage.NewBackendHooks(lg, nil),
 	}
 	s.start()
 	_, err := s.RemoveMember(t.Context(), 1234)
@@ -1130,15 +1156,17 @@ func TestUpdateMember(t *testing.T) {
 		transport:   newNopTransporter(),
 	})
 	s := &EtcdServer{
-		lgMu:         new(sync.RWMutex),
-		lg:           lg,
-		r:            *r,
-		v2store:      st,
-		cluster:      cl,
-		reqIDGen:     idutil.NewGenerator(0, time.Time{}),
-		SyncTicker:   &time.Ticker{},
-		consistIndex: cindex.NewFakeConsistentIndex(0),
-		beHooks:      serverstorage.NewBackendHooks(lg, nil),
+		lgMu:       new(sync.RWMutex),
+		lg:         lg,
+		r:          *r,
+		v2store:    st,
+		cluster:    cl,
+		reqIDGen:   idutil.NewGenerator(0, time.Time{}),
+		SyncTicker: &time.Ticker{},
+		state: State{
+			consistIndex: cindex.NewFakeConsistentIndex(0),
+		},
+		beHooks: serverstorage.NewBackendHooks(lg, nil),
 	}
 	s.start()
 	wm := membership.Member{ID: 1234, RaftAttributes: membership.RaftAttributes{PeerURLs: []string{"http://127.0.0.1:1"}}}

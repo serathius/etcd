@@ -208,9 +208,8 @@ type Server interface {
 
 // EtcdServer is the production implementation of the Server interface
 type EtcdServer struct {
-	state        State
-	consistIndex cindex.ConsistentIndexer // consistIndex is used to get/set/save consistentIndex
-	r            raftNode                 // uses 64-bit atomics; keep 64-bit aligned.
+	state State
+	r     raftNode // uses 64-bit atomics; keep 64-bit aligned.
 
 	readych chan struct{}
 	Cfg     config.ServerConfig
@@ -301,6 +300,8 @@ type State struct {
 	committedIndex    uint64 // must use atomic operations to access; keep 64-bit aligned.
 	term              uint64 // must use atomic operations to access; keep 64-bit aligned.
 	lead              uint64 // must use atomic operations to access; keep 64-bit aligned.
+
+	consistIndex cindex.ConsistentIndexer // consistIndex is used to get/set/save consistentIndex
 }
 
 // NewServer creates a new EtcdServer from the supplied configuration. The
@@ -324,6 +325,9 @@ func NewServer(cfg config.ServerConfig) (srv *EtcdServer, err error) {
 
 	heartbeat := time.Duration(cfg.TickMs) * time.Millisecond
 	srv = &EtcdServer{
+		state: State{
+			consistIndex: b.storage.backend.ci,
+		},
 		readych:               make(chan struct{}),
 		Cfg:                   cfg,
 		lgMu:                  new(sync.RWMutex),
@@ -341,7 +345,6 @@ func NewServer(cfg config.ServerConfig) (srv *EtcdServer, err error) {
 		peerRt:                b.prt,
 		reqIDGen:              idutil.NewGenerator(uint16(b.cluster.nodeID), time.Now()),
 		AccessController:      &AccessController{CORS: cfg.CORS, HostWhitelist: cfg.HostWhitelist},
-		consistIndex:          b.storage.backend.ci,
 		firstCommitInTerm:     notify.NewNotifier(),
 		clusterVersionChanged: notify.NewNotifier(),
 	}
@@ -1050,8 +1053,8 @@ func (s *EtcdServer) applySnapshot(ep *etcdProgress, toApply *toApply) {
 	// will get the old consistent_index persisted into the db in OnPreCommitUnsafe.
 	// Eventually the new consistent_index value coming from snapshot is overwritten
 	// by the old value.
-	s.consistIndex.SetBackend(newbe)
-	verifySnapshotIndex(toApply.snapshot, s.consistIndex.ConsistentIndex())
+	s.state.consistIndex.SetBackend(newbe)
+	verifySnapshotIndex(toApply.snapshot, s.state.consistIndex.ConsistentIndex())
 
 	// always recover lessor before kv. When we recover the mvcc.KV it will reattach keys to its leases.
 	// If we recover mvcc.KV first, it will attach the keys to the wrong lessor before it recovers.
@@ -1071,7 +1074,7 @@ func (s *EtcdServer) applySnapshot(ep *etcdProgress, toApply *toApply) {
 
 	newbe.SetTxPostLockInsideApplyHook(s.getTxPostLockInsideApplyHook())
 
-	lg.Info("restored mvcc store", zap.Uint64("consistent-index", s.consistIndex.ConsistentIndex()))
+	lg.Info("restored mvcc store", zap.Uint64("consistent-index", s.state.consistIndex.ConsistentIndex()))
 
 	// Closing old backend might block until all the txns
 	// on the backend are finished.
@@ -1154,7 +1157,7 @@ func (s *EtcdServer) applySnapshot(ep *etcdProgress, toApply *toApply) {
 }
 
 func (s *EtcdServer) NewUberApplier() apply.UberApplier {
-	return apply.NewUberApplier(s.lg, s.be, s.KV(), s.alarmStore, s.authStore, s.lessor, s.cluster, s, s, s.consistIndex,
+	return apply.NewUberApplier(s.lg, s.be, s.KV(), s.alarmStore, s.authStore, s.lessor, s.cluster, s, s, s.state.consistIndex,
 		s.Cfg.WarningApplyDuration, s.Cfg.ServerFeatureGate.Enabled(features.TxnModeWriteWithSharedBuffer), s.Cfg.QuotaBackendBytes)
 }
 
@@ -1877,7 +1880,7 @@ func (s *EtcdServer) apply(
 	s.lg.Debug("Applying entries", zap.Int("num-entries", len(es)))
 	for i := range es {
 		e := es[i]
-		index := s.consistIndex.ConsistentIndex()
+		index := s.state.consistIndex.ConsistentIndex()
 		s.lg.Debug("Applying entry",
 			zap.Uint64("consistent-index", index),
 			zap.Uint64("entry-index", e.Index),
@@ -1890,7 +1893,7 @@ func (s *EtcdServer) apply(
 		if e.Index > index {
 			shouldApplyV3 = membership.ApplyBoth
 			// set the consistent index of current executing entry
-			s.consistIndex.SetConsistentApplyingIndex(e.Index, e.Term)
+			s.state.consistIndex.SetConsistentApplyingIndex(e.Index, e.Term)
 		}
 		switch e.Type {
 		case raftpb.EntryNormal:
@@ -1928,9 +1931,9 @@ func (s *EtcdServer) applyEntryNormal(e *raftpb.Entry, shouldApplyV3 membership.
 		defer func() {
 			// The txPostLockInsideApplyHook will not get called in some cases,
 			// in which we should move the consistent index forward directly.
-			newIndex := s.consistIndex.ConsistentIndex()
+			newIndex := s.state.consistIndex.ConsistentIndex()
 			if newIndex < e.Index {
-				s.consistIndex.SetConsistentIndex(e.Index, e.Term)
+				s.state.consistIndex.SetConsistentIndex(e.Index, e.Term)
 			}
 		}()
 	}
@@ -2081,9 +2084,9 @@ func (s *EtcdServer) applyConfChange(cc raftpb.ConfChange, confState *raftpb.Con
 
 		// The txPostLock callback will not get called in this case,
 		// so we should set the consistent index directly.
-		if s.consistIndex != nil && membership.ApplyBoth == shouldApplyV3 {
-			applyingIndex, applyingTerm := s.consistIndex.ConsistentApplyingIndex()
-			s.consistIndex.SetConsistentIndex(applyingIndex, applyingTerm)
+		if s.state.consistIndex != nil && membership.ApplyBoth == shouldApplyV3 {
+			applyingIndex, applyingTerm := s.state.consistIndex.ConsistentApplyingIndex()
+			s.state.consistIndex.SetConsistentIndex(applyingIndex, applyingTerm)
 		}
 		return false, err
 	}
@@ -2179,7 +2182,7 @@ func (s *EtcdServer) snapshot(ep *etcdProgress, toDisk bool) {
 	}
 	ep.memorySnapshotIndex = ep.appliedi
 
-	verifyConsistentIndexIsLatest(lg, snap, s.consistIndex.ConsistentIndex())
+	verifyConsistentIndexIsLatest(lg, snap, s.state.consistIndex.ConsistentIndex())
 
 	if toDisk {
 		// SaveSnap saves the snapshot to file and appends the corresponding WAL entry.
@@ -2516,9 +2519,9 @@ func (s *EtcdServer) Version() *serverversion.Manager {
 
 func (s *EtcdServer) getTxPostLockInsideApplyHook() func() {
 	return func() {
-		applyingIdx, applyingTerm := s.consistIndex.ConsistentApplyingIndex()
-		if applyingIdx > s.consistIndex.UnsafeConsistentIndex() {
-			s.consistIndex.SetConsistentIndex(applyingIdx, applyingTerm)
+		applyingIdx, applyingTerm := s.state.consistIndex.ConsistentApplyingIndex()
+		if applyingIdx > s.state.consistIndex.UnsafeConsistentIndex() {
+			s.state.consistIndex.SetConsistentIndex(applyingIdx, applyingTerm)
 		}
 	}
 }
