@@ -31,7 +31,7 @@ import (
 func (s *EtcdServer) createMergedSnapshotMessage(m raftpb.Message, snapt, snapi uint64, confState raftpb.ConfState) snap.Message {
 	lg := s.Logger()
 	// get a snapshot of v2 store as []byte
-	d := GetMembershipInfoInV2Format(lg, s.cluster)
+	d := GetMembershipInfoInV2Format(lg, s.state.cluster)
 
 	// commit kv to write metadata(for example: consistent index).
 	s.KV().Commit()

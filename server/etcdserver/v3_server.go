@@ -442,7 +442,7 @@ func (s *EtcdServer) LeaseTimeToLive(ctx context.Context, r *pb.LeaseTimeToLiveR
 
 func (s *EtcdServer) newHeader() *pb.ResponseHeader {
 	return &pb.ResponseHeader{
-		ClusterId: uint64(s.cluster.ID()),
+		ClusterId: uint64(s.state.cluster.ID()),
 		MemberId:  uint64(s.MemberID()),
 		Revision:  s.KV().Rev(),
 		RaftTerm:  s.Term(),
@@ -460,13 +460,13 @@ func (s *EtcdServer) LeaseLeases(_ context.Context, _ *pb.LeaseLeasesRequest) (*
 }
 
 func (s *EtcdServer) waitLeader(ctx context.Context) (*membership.Member, error) {
-	leader := s.cluster.Member(s.Leader())
+	leader := s.state.cluster.Member(s.Leader())
 	for leader == nil {
 		// wait an election
 		dur := time.Duration(s.Cfg.ElectionTicks) * time.Duration(s.Cfg.TickMs) * time.Millisecond
 		select {
 		case <-time.After(dur):
-			leader = s.cluster.Member(s.Leader())
+			leader = s.state.cluster.Member(s.Leader())
 		case <-s.stopping:
 			return nil, errors.ErrStopped
 		case <-ctx.Done():

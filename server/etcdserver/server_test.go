@@ -102,11 +102,11 @@ func TestApplyRepeat(t *testing.T) {
 		lg:         zaptest.NewLogger(t),
 		r:          *r,
 		v2store:    st,
-		cluster:    cl,
 		reqIDGen:   idutil.NewGenerator(0, time.Time{}),
 		SyncTicker: &time.Ticker{},
 		state: State{
 			consistIndex: cindex.NewFakeConsistentIndex(0),
+			cluster:      cl,
 		},
 		uberApply: uberApplierMock{},
 	}
@@ -170,9 +170,9 @@ func TestV2SetMemberAttributes(t *testing.T) {
 		lgMu:    new(sync.RWMutex),
 		lg:      zaptest.NewLogger(t),
 		v2store: mockstore.NewRecorder(),
-		cluster: cl,
 		state: State{
 			consistIndex: cindex.NewFakeConsistentIndex(0),
+			cluster:      cl,
 		},
 		w:   wait.New(),
 		Cfg: cfg,
@@ -218,9 +218,9 @@ func TestV2SetClusterVersion(t *testing.T) {
 		lgMu:    new(sync.RWMutex),
 		lg:      zaptest.NewLogger(t),
 		v2store: mockstore.NewRecorder(),
-		cluster: cl,
 		state: State{
 			consistIndex: cindex.NewFakeConsistentIndex(0),
+			cluster:      cl,
 		},
 		w:   wait.New(),
 		Cfg: cfg,
@@ -330,7 +330,7 @@ func TestApplyConfStateWithRestart(t *testing.T) {
 	}
 
 	t.Log("Simulating etcd restart by clearing v2 store")
-	srv.cluster.SetStore(v2store.New())
+	srv.state.cluster.SetStore(v2store.New())
 
 	t.Log("Reapplying same entries after restart")
 	srv.apply(entries, &confState, nil)
@@ -346,16 +346,16 @@ func newServer(t *testing.T, recorder *nodeRecorder) *EtcdServer {
 		betesting.Close(t, be)
 	})
 	srv := &EtcdServer{
-		lgMu:    new(sync.RWMutex),
-		lg:      zaptest.NewLogger(t),
-		r:       *newRaftNode(raftNodeConfig{lg: lg, Node: recorder}),
-		cluster: membership.NewCluster(lg),
+		lgMu: new(sync.RWMutex),
+		lg:   zaptest.NewLogger(t),
+		r:    *newRaftNode(raftNodeConfig{lg: lg, Node: recorder}),
 		state: State{
+			cluster:      membership.NewCluster(lg),
 			consistIndex: cindex.NewConsistentIndex(be),
 		},
 	}
-	srv.cluster.SetBackend(schema.NewMembershipBackend(lg, be))
-	srv.cluster.SetStore(v2store.New())
+	srv.state.cluster.SetBackend(schema.NewMembershipBackend(lg, be))
+	srv.state.cluster.SetStore(v2store.New())
 	srv.beHooks = serverstorage.NewBackendHooks(lg, srv.state.consistIndex)
 	srv.r.transport = newNopTransporter()
 	srv.w = mockwait.NewNop()
@@ -434,10 +434,12 @@ func TestApplyConfChangeError(t *testing.T) {
 	for i, tt := range tests {
 		n := newNodeRecorder()
 		srv := &EtcdServer{
-			lgMu:    new(sync.RWMutex),
-			lg:      zaptest.NewLogger(t),
-			r:       *newRaftNode(raftNodeConfig{lg: zaptest.NewLogger(t), Node: n}),
-			cluster: cl,
+			lgMu: new(sync.RWMutex),
+			lg:   zaptest.NewLogger(t),
+			r:    *newRaftNode(raftNodeConfig{lg: zaptest.NewLogger(t), Node: n}),
+			state: State{
+				cluster: cl,
+			},
 		}
 		_, err := srv.applyConfChange(tt.cc, nil, true)
 		if !errorspkg.Is(err, tt.werr) {
@@ -478,8 +480,10 @@ func TestApplyConfChangeShouldStop(t *testing.T) {
 		lg:       lg,
 		memberID: 1,
 		r:        *r,
-		cluster:  cl,
-		beHooks:  serverstorage.NewBackendHooks(lg, nil),
+		state: State{
+			cluster: cl,
+		},
+		beHooks: serverstorage.NewBackendHooks(lg, nil),
 	}
 	cc := raftpb.ConfChange{
 		Type:   raftpb.ConfChangeRemoveNode,
@@ -526,10 +530,10 @@ func TestApplyConfigChangeUpdatesConsistIndex(t *testing.T) {
 		lg:       lg,
 		memberID: 1,
 		r:        *realisticRaftNode(lg, 1, nil),
-		cluster:  cl,
 		w:        wait.New(),
 		state: State{
 			consistIndex: ci,
+			cluster:      cl,
 		},
 		beHooks: serverstorage.NewBackendHooks(lg, ci),
 	}
@@ -622,10 +626,10 @@ func TestApplyMultiConfChangeShouldStop(t *testing.T) {
 		lg:       lg,
 		memberID: 2,
 		r:        *r,
-		cluster:  cl,
 		w:        wait.New(),
 		state: State{
 			consistIndex: ci,
+			cluster:      cl,
 		},
 		beHooks: serverstorage.NewBackendHooks(lg, ci),
 	}
@@ -686,7 +690,7 @@ func TestSnapshotDisk(t *testing.T) {
 	srv.be = be
 
 	cl := membership.NewCluster(zaptest.NewLogger(t))
-	srv.cluster = cl
+	srv.state.cluster = cl
 
 	ch := make(chan struct{}, 1)
 
@@ -739,7 +743,7 @@ func TestSnapshotMemory(t *testing.T) {
 	srv.be = be
 
 	cl := membership.NewCluster(zaptest.NewLogger(t))
-	srv.cluster = cl
+	srv.state.cluster = cl
 
 	ch := make(chan struct{}, 1)
 
@@ -805,10 +809,10 @@ func TestSnapshotOrdering(t *testing.T) {
 		r:           *r,
 		v2store:     st,
 		snapshotter: snap.New(lg, snapdir),
-		cluster:     cl,
 		SyncTicker:  &time.Ticker{},
 		state: State{
 			consistIndex: ci,
+			cluster:      cl,
 		},
 		beHooks: serverstorage.NewBackendHooks(lg, ci),
 	}
@@ -902,10 +906,10 @@ func TestConcurrentApplyAndSnapshotV3(t *testing.T) {
 		r:           *r,
 		v2store:     st,
 		snapshotter: snap.New(lg, testdir),
-		cluster:     cl,
 		SyncTicker:  &time.Ticker{},
 		state: State{
 			consistIndex: ci,
+			cluster:      cl,
 		},
 		beHooks:           serverstorage.NewBackendHooks(lg, ci),
 		firstCommitInTerm: notify.NewNotifier(),
@@ -998,11 +1002,11 @@ func TestAddMember(t *testing.T) {
 		lg:         lg,
 		r:          *r,
 		v2store:    st,
-		cluster:    cl,
 		reqIDGen:   idutil.NewGenerator(0, time.Time{}),
 		SyncTicker: &time.Ticker{},
 		state: State{
 			consistIndex: cindex.NewFakeConsistentIndex(0),
+			cluster:      cl,
 		},
 		beHooks: serverstorage.NewBackendHooks(lg, nil),
 	}
@@ -1057,11 +1061,11 @@ func TestProcessIgnoreMismatchMessage(t *testing.T) {
 		memberID:   1,
 		r:          *r,
 		v2store:    st,
-		cluster:    cl,
 		reqIDGen:   idutil.NewGenerator(0, time.Time{}),
 		SyncTicker: &time.Ticker{},
 		state: State{
 			consistIndex: cindex.NewFakeConsistentIndex(0),
+			cluster:      cl,
 		},
 		beHooks: serverstorage.NewBackendHooks(lg, nil),
 	}
@@ -1109,11 +1113,11 @@ func TestRemoveMember(t *testing.T) {
 		lg:         zaptest.NewLogger(t),
 		r:          *r,
 		v2store:    st,
-		cluster:    cl,
 		reqIDGen:   idutil.NewGenerator(0, time.Time{}),
 		SyncTicker: &time.Ticker{},
 		state: State{
 			consistIndex: cindex.NewFakeConsistentIndex(0),
+			cluster:      cl,
 		},
 		beHooks: serverstorage.NewBackendHooks(lg, nil),
 	}
@@ -1160,11 +1164,11 @@ func TestUpdateMember(t *testing.T) {
 		lg:         lg,
 		r:          *r,
 		v2store:    st,
-		cluster:    cl,
 		reqIDGen:   idutil.NewGenerator(0, time.Time{}),
 		SyncTicker: &time.Ticker{},
 		state: State{
 			consistIndex: cindex.NewFakeConsistentIndex(0),
+			cluster:      cl,
 		},
 		beHooks: serverstorage.NewBackendHooks(lg, nil),
 	}
@@ -1206,7 +1210,9 @@ func TestPublishV3(t *testing.T) {
 		memberID:   1,
 		r:          *newRaftNode(raftNodeConfig{lg: lg, Node: n}),
 		attributes: membership.Attributes{Name: "node1", ClientURLs: []string{"http://a", "http://b"}},
-		cluster:    &membership.RaftCluster{},
+		state: State{
+			cluster: &membership.RaftCluster{},
+		},
 		w:          w,
 		reqIDGen:   idutil.NewGenerator(0, time.Time{}),
 		SyncTicker: &time.Ticker{},
@@ -1243,11 +1249,13 @@ func TestPublishV3Stopped(t *testing.T) {
 		transport: newNopTransporter(),
 	})
 	srv := &EtcdServer{
-		lgMu:       new(sync.RWMutex),
-		lg:         zaptest.NewLogger(t),
-		Cfg:        config.ServerConfig{Logger: zaptest.NewLogger(t), TickMs: 1, SnapshotCatchUpEntries: DefaultSnapshotCatchUpEntries},
-		r:          *r,
-		cluster:    &membership.RaftCluster{},
+		lgMu: new(sync.RWMutex),
+		lg:   zaptest.NewLogger(t),
+		Cfg:  config.ServerConfig{Logger: zaptest.NewLogger(t), TickMs: 1, SnapshotCatchUpEntries: DefaultSnapshotCatchUpEntries},
+		r:    *r,
+		state: State{
+			cluster: &membership.RaftCluster{},
+		},
 		w:          mockwait.NewNop(),
 		done:       make(chan struct{}),
 		stopping:   make(chan struct{}),
@@ -1280,7 +1288,9 @@ func TestPublishV3Retry(t *testing.T) {
 		w:          mockwait.NewNop(),
 		stopping:   make(chan struct{}),
 		attributes: membership.Attributes{Name: "node1", ClientURLs: []string{"http://a", "http://b"}},
-		cluster:    &membership.RaftCluster{},
+		state: State{
+			cluster: &membership.RaftCluster{},
+		},
 		reqIDGen:   idutil.NewGenerator(0, time.Time{}),
 		SyncTicker: &time.Ticker{},
 		authStore:  auth.NewAuthStore(lg, schema.NewAuthBackend(lg, be), nil, 0),
@@ -1329,7 +1339,9 @@ func TestUpdateVersionV3(t *testing.T) {
 		Cfg:        config.ServerConfig{Logger: lg, TickMs: 1, SnapshotCatchUpEntries: DefaultSnapshotCatchUpEntries, MaxRequestBytes: 1000},
 		r:          *newRaftNode(raftNodeConfig{lg: zaptest.NewLogger(t), Node: n}),
 		attributes: membership.Attributes{Name: "node1", ClientURLs: []string{"http://node1.com"}},
-		cluster:    &membership.RaftCluster{},
+		state: State{
+			cluster: &membership.RaftCluster{},
+		},
 		w:          w,
 		reqIDGen:   idutil.NewGenerator(0, time.Time{}),
 		SyncTicker: &time.Ticker{},

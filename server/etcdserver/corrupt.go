@@ -456,7 +456,7 @@ type peerHashKVResp struct {
 func (s *EtcdServer) getPeerHashKVs(rev int64) []*peerHashKVResp {
 	// TODO: handle the case when "s.cluster.Members" have not
 	// been populated (e.g. no snapshot to load from disk)
-	members := s.cluster.Members()
+	members := s.state.cluster.Members()
 	peers := make([]peerInfo, 0, len(members))
 	for _, m := range members {
 		if m.ID == s.MemberID() {
@@ -485,7 +485,7 @@ func (s *EtcdServer) getPeerHashKVs(rev int64) []*peerHashKVResp {
 			var resp *pb.HashKVResponse
 
 			ctx, cancel := context.WithTimeout(context.Background(), s.Cfg.ReqTimeout())
-			resp, lastErr = HashByRev(ctx, s.cluster.ID(), cc, ep, rev)
+			resp, lastErr = HashByRev(ctx, s.state.cluster.ID(), cc, ep, rev)
 			cancel()
 			if lastErr == nil {
 				resps = append(resps, &peerHashKVResp{peerInfo: p, resp: resp, err: nil})
@@ -529,7 +529,7 @@ func (h *hashKVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad path", http.StatusBadRequest)
 		return
 	}
-	if gcid := r.Header.Get("X-Etcd-Cluster-ID"); gcid != "" && gcid != h.server.cluster.ID().String() {
+	if gcid := r.Header.Get("X-Etcd-Cluster-ID"); gcid != "" && gcid != h.server.state.cluster.ID().String() {
 		http.Error(w, rafthttp.ErrClusterIDMismatch.Error(), http.StatusPreconditionFailed)
 		return
 	}

@@ -62,15 +62,15 @@ func (s *serverVersionAdapter) DowngradeCancel(ctx context.Context) error {
 }
 
 func (s *serverVersionAdapter) GetClusterVersion() *semver.Version {
-	return s.cluster.Version()
+	return s.state.cluster.Version()
 }
 
 func (s *serverVersionAdapter) GetDowngradeInfo() *serverversion.DowngradeInfo {
-	return s.cluster.DowngradeInfo()
+	return s.state.cluster.DowngradeInfo()
 }
 
 func (s *serverVersionAdapter) GetMembersVersions() map[string]*version.Versions {
-	return getMembersVersions(s.lg, s.cluster, s.MemberID(), s.peerRt, s.Cfg.ReqTimeout())
+	return getMembersVersions(s.lg, s.state.cluster, s.MemberID(), s.peerRt, s.Cfg.ReqTimeout())
 }
 
 func (s *serverVersionAdapter) GetStorageVersion() *semver.Version {

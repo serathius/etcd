@@ -513,8 +513,8 @@ func TestHashKVHandler(t *testing.T) {
 	revision := 1
 
 	etcdSrv := &EtcdServer{}
-	etcdSrv.cluster = newTestCluster(t)
-	etcdSrv.cluster.SetID(types.ID(localClusterID), types.ID(localClusterID))
+	etcdSrv.state.cluster = newTestCluster(t)
+	etcdSrv.state.cluster.SetID(types.ID(localClusterID), types.ID(localClusterID))
 	be, _ := betesting.NewDefaultTmpBackend(t)
 	defer betesting.Close(t, be)
 	etcdSrv.kv = mvcc.New(zap.NewNop(), be, &lease.FakeLessor{}, mvcc.StoreConfig{})
