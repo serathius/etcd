@@ -26,17 +26,16 @@ import (
 	"github.com/antithesishq/antithesis-sdk-go/random"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/tests/v3/robustness/client"
+	"go.etcd.io/etcd/tests/v3/robustness/identity"
 )
 
-func Connect() *clientv3.Client {
+func Connect() *client.RecordingClient {
 	// This function returns a client connection to an etcd node
 
-	hosts := [][]string{{"etcd0:2379"}, {"etcd1:2379"}, {"etcd2:2379"}}
+	hosts := []string{"etcd0:2379", "etcd1:2379", "etcd2:2379"}
 	host := random.RandomChoice(hosts)
-	cli, err := clientv3.New(clientv3.Config{
-		Endpoints:   host,
-		DialTimeout: 5 * time.Second,
-	})
+	cli, err := client.NewRecordingClient(hosts, identity.NewIDProvider(), time.Now())
 	if err != nil {
 		log.Fatalf("Failed to connect to etcd: %v", err)
 		// Antithesis Assertion: client should always be able to connect to an etcd host
