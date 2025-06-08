@@ -58,14 +58,6 @@ func PersistedRequestsCluster(lg *zap.Logger, cluster *e2e.EtcdProcessCluster) (
 }
 
 func PersistedRequests(lg *zap.Logger, dataDirs []string) ([]model.EtcdRequest, error) {
-	entries, err := quorumWALEntries(lg, dataDirs, ReadWAL)
-	if err != nil {
-		return nil, err
-	}
-	return persistedRequests(lg, entries)
-}
-
-func quorumWALEntries(lg *zap.Logger, dataDirs []string, reader walReader) ([]raftpb.Entry, error) {
 	if len(dataDirs) == 0 {
 		return nil, errors.New("no data dirs")
 	}
@@ -73,7 +65,7 @@ func quorumWALEntries(lg *zap.Logger, dataDirs []string, reader walReader) ([]ra
 	allowedFailures := len(dataDirs) / 2
 	memberWALEntries := make([][]raftpb.Entry, 0, len(dataDirs))
 	for _, dir := range dataDirs {
-		requests, err := reader(lg, dir)
+		requests, err := ReadWAL(lg, dir)
 		if err != nil {
 			if allowedFailures < 1 {
 				return nil, err
@@ -85,8 +77,16 @@ func quorumWALEntries(lg *zap.Logger, dataDirs []string, reader walReader) ([]ra
 	}
 	// Return empty history if all histories were empty/failed to read.
 	if len(memberWALEntries) == 0 {
-		return []raftpb.Entry{}, nil
+		return []model.EtcdRequest{}, nil
 	}
+	entries, err := quorumWALEntries(memberWALEntries, len(dataDirs))
+	if err != nil {
+		return nil, err
+	}
+	return persistedRequests(lg, entries)
+}
+
+func quorumWALEntries(memberWALEntries [][]raftpb.Entry, clusterSize int) ([]raftpb.Entry, error) {
 	// Each history collects votes from each history that it matches.
 	votes := make([]int, len(memberWALEntries))
 	lastDiff := ""
@@ -114,8 +114,8 @@ func quorumWALEntries(lg *zap.Logger, dataDirs []string, reader walReader) ([]ra
 	}
 	// Select longest history that has votes from quorum.
 	longestHistory := []raftpb.Entry{}
-	quorum := len(dataDirs)/2 + 1
 	foundQuorum := false
+	quorum := clusterSize/2 + 1
 	for i := 0; i < len(memberWALEntries); i++ {
 		if votes[i] < quorum {
 			continue
