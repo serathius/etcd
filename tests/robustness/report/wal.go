@@ -58,16 +58,20 @@ func PersistedRequestsCluster(lg *zap.Logger, cluster *e2e.EtcdProcessCluster) (
 }
 
 func PersistedRequests(lg *zap.Logger, dataDirs []string) ([]model.EtcdRequest, error) {
-	return persistedRequests(lg, dataDirs, requestsPersistedInWAL)
+	entries, err := quorumWALEntries(lg, dataDirs, ReadWAL)
+	if err != nil {
+		return nil, err
+	}
+	return persistedRequests(lg, entries)
 }
 
-func persistedRequests(lg *zap.Logger, dataDirs []string, reader persistedRequestReaderFunc) ([]model.EtcdRequest, error) {
+func quorumWALEntries(lg *zap.Logger, dataDirs []string, reader walReader) ([]raftpb.Entry, error) {
 	if len(dataDirs) == 0 {
 		return nil, errors.New("no data dirs")
 	}
 	// Allow failure in minority of etcd cluster.
 	allowedFailures := len(dataDirs) / 2
-	memberRequestHistories := make([][]model.EtcdRequest, 0, len(dataDirs))
+	memberWALEntries := make([][]raftpb.Entry, 0, len(dataDirs))
 	for _, dir := range dataDirs {
 		requests, err := reader(lg, dir)
 		if err != nil {
@@ -77,17 +81,17 @@ func persistedRequests(lg *zap.Logger, dataDirs []string, reader persistedReques
 			allowedFailures--
 			continue
 		}
-		memberRequestHistories = append(memberRequestHistories, requests)
+		memberWALEntries = append(memberWALEntries, requests)
 	}
 	// Return empty history if all histories were empty/failed to read.
-	if len(memberRequestHistories) == 0 {
-		return []model.EtcdRequest{}, nil
+	if len(memberWALEntries) == 0 {
+		return []raftpb.Entry{}, nil
 	}
 	// Each history collects votes from each history that it matches.
-	votes := make([]int, len(memberRequestHistories))
+	votes := make([]int, len(memberWALEntries))
 	lastDiff := ""
-	for i := 0; i < len(memberRequestHistories); i++ {
-		for j := 0; j < len(memberRequestHistories); j++ {
+	for i := 0; i < len(memberWALEntries); i++ {
+		for j := 0; j < len(memberWALEntries); j++ {
 			if i == j {
 				// history votes for itself
 				votes[i]++
@@ -97,8 +101,8 @@ func persistedRequests(lg *zap.Logger, dataDirs []string, reader persistedReques
 				// avoid comparing things twice
 				continue
 			}
-			first := memberRequestHistories[i]
-			second := memberRequestHistories[j]
+			first := memberWALEntries[i]
+			second := memberWALEntries[j]
 			minLength := min(len(first), len(second))
 			if diff := cmp.Diff(first[:minLength], second[:minLength]); diff == "" {
 				votes[i]++
@@ -109,23 +113,23 @@ func persistedRequests(lg *zap.Logger, dataDirs []string, reader persistedReques
 		}
 	}
 	// Select longest history that has votes from quorum.
-	longestHistory := []model.EtcdRequest{}
+	longestHistory := []raftpb.Entry{}
 	quorum := len(dataDirs)/2 + 1
 	foundQuorum := false
-	for i := 0; i < len(memberRequestHistories); i++ {
+	for i := 0; i < len(memberWALEntries); i++ {
 		if votes[i] < quorum {
 			continue
 		}
 		// There cannot be incompabible histories supported by quorum
-		minLength := min(len(memberRequestHistories[i]), len(longestHistory))
-		if diff := cmp.Diff(memberRequestHistories[i][:minLength], longestHistory[:minLength]); diff != "" {
+		minLength := min(len(memberWALEntries[i]), len(longestHistory))
+		if diff := cmp.Diff(memberWALEntries[i][:minLength], longestHistory[:minLength]); diff != "" {
 			lastDiff = diff
 			foundQuorum = false
 			break
 		}
 		foundQuorum = true
-		if len(memberRequestHistories[i]) > len(longestHistory) {
-			longestHistory = memberRequestHistories[i]
+		if len(memberWALEntries[i]) > len(longestHistory) {
+			longestHistory = memberWALEntries[i]
 		}
 	}
 	if !foundQuorum {
@@ -137,13 +141,9 @@ func persistedRequests(lg *zap.Logger, dataDirs []string, reader persistedReques
 	return longestHistory, nil
 }
 
-type persistedRequestReaderFunc = func(lg *zap.Logger, dataDir string) ([]model.EtcdRequest, error)
+type walReader = func(lg *zap.Logger, dataDir string) ([]raftpb.Entry, error)
 
-func requestsPersistedInWAL(lg *zap.Logger, dataDir string) ([]model.EtcdRequest, error) {
-	_, ents, err := ReadWAL(lg, dataDir)
-	if err != nil {
-		return nil, err
-	}
+func persistedRequests(lg *zap.Logger, ents []raftpb.Entry) ([]model.EtcdRequest, error) {
 	requests := make([]model.EtcdRequest, 0, len(ents))
 	for _, ent := range ents {
 		if ent.Type != raftpb.EntryNormal || len(ent.Data) == 0 {
@@ -160,36 +160,36 @@ func requestsPersistedInWAL(lg *zap.Logger, dataDir string) ([]model.EtcdRequest
 	return requests, nil
 }
 
-func ReadWAL(lg *zap.Logger, dataDir string) (state raftpb.HardState, ents []raftpb.Entry, err error) {
+func ReadWAL(lg *zap.Logger, dataDir string) (ents []raftpb.Entry, err error) {
 	walDir := datadir.ToWALDir(dataDir)
 	repaired := false
 	for {
 		w, err := wal.OpenForRead(lg, walDir, walpb.Snapshot{Index: 0})
 		if err != nil {
-			return state, nil, fmt.Errorf("failed to open WAL, err: %w", err)
+			return nil, fmt.Errorf("failed to open WAL, err: %w", err)
 		}
-		_, state, ents, err = w.ReadAll()
+		_, _, ents, err = w.ReadAll()
 		w.Close()
 		if err != nil {
 			if errors.Is(err, wal.ErrSnapshotNotFound) {
 				lg.Info("Error occurred when reading WAL entries", zap.Error(err))
-				return state, ents, nil
+				return ents, nil
 			}
 			if errors.Is(err, wal.ErrSliceOutOfRange) {
-				return state, nil, fmt.Errorf("failed to read WAL, err: %w", err)
+				return nil, fmt.Errorf("failed to read WAL, err: %w", err)
 			}
 			// we can only repair ErrUnexpectedEOF and we never repair twice.
 			if repaired || !errors.Is(err, io.ErrUnexpectedEOF) {
-				return state, nil, fmt.Errorf("failed to read WAL, cannot be repaired, err: %w", err)
+				return nil, fmt.Errorf("failed to read WAL, cannot be repaired, err: %w", err)
 			}
 			if !wal.Repair(lg, walDir) {
-				return state, nil, fmt.Errorf("failed to repair WAL, err: %w", err)
+				return nil, fmt.Errorf("failed to repair WAL, err: %w", err)
 			}
 			lg.Info("repaired WAL", zap.Error(err))
 			repaired = true
 			continue
 		}
-		return state, ents, nil
+		return ents, nil
 	}
 }
 
