@@ -137,7 +137,7 @@ func (ep *ExpectProcess) tryReadNextLine(r *bufio.Reader) error {
 
 	if l != "" {
 		if printDebugLines {
-			fmt.Printf("%s (%s) (%d): %s", ep.cmd.Path, ep.cfg.name, ep.cmd.Process.Pid, l)
+			fmt.Printf("%s: %s", ep.cfg.name, l)
 		}
 		ep.lines = append(ep.lines, l)
 		ep.count++

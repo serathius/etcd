@@ -27,6 +27,7 @@ import (
 	"go.etcd.io/etcd/tests/v3/robustness/identity"
 	"go.etcd.io/etcd/tests/v3/robustness/report"
 	"go.etcd.io/etcd/tests/v3/robustness/traffic"
+	"go.uber.org/zap"
 )
 
 type trigger interface {
@@ -37,7 +38,7 @@ type trigger interface {
 type triggerDefrag struct{}
 
 func (t triggerDefrag) Trigger(ctx context.Context, _ *testing.T, member e2e.EtcdProcess, clus *e2e.EtcdProcessCluster, baseTime time.Time, ids identity.Provider) ([]report.ClientReport, error) {
-	cc, err := client.NewRecordingClient(member.EndpointsGRPC(), ids, baseTime)
+	cc, err := client.NewRecordingClient(member.EndpointsGRPC(), ids, baseTime, zap.NewNop())
 	if err != nil {
 		return nil, fmt.Errorf("failed creating client: %w", err)
 	}
@@ -60,7 +61,7 @@ type triggerCompact struct {
 func (t triggerCompact) Trigger(ctx context.Context, _ *testing.T, member e2e.EtcdProcess, clus *e2e.EtcdProcessCluster, baseTime time.Time, ids identity.Provider) ([]report.ClientReport, error) {
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
-	cc, err := client.NewRecordingClient(member.EndpointsGRPC(), ids, baseTime)
+	cc, err := client.NewRecordingClient(member.EndpointsGRPC(), ids, baseTime, zap.NewNop())
 	if err != nil {
 		return nil, fmt.Errorf("failed creating client: %w", err)
 	}

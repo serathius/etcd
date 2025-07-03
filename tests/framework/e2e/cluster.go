@@ -553,7 +553,7 @@ func (cfg *EtcdProcessClusterConfig) EtcdServerProcessConfig(tb testing.TB, i in
 		}
 	}
 
-	name := fmt.Sprintf("%s-test-%d", testNameCleanRegex.ReplaceAllString(tb.Name(), ""), i)
+	name := fmt.Sprintf("server-%d", i)
 
 	var dataDirPath string
 	if cfg.BaseDataDirPath == "" {

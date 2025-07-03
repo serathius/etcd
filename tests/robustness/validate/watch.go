@@ -98,7 +98,7 @@ func validateFilter(lg *zap.Logger, report report.ClientReport) (err error) {
 		for _, resp := range watch.Responses {
 			for _, event := range resp.Events {
 				if !event.Match(watch.Request) {
-					lg.Error("event not matching event filter", zap.Int("client", report.ClientID), zap.Any("request", watch.Request), zap.Any("event", event))
+					lg.Error("event not matching event filter", zap.Int("client", report.ClientID), zap.Any("request", watch.Request), zap.Any("event", event), zap.Int64("watch-id", watch.ID))
 					err = errBrokeFilter
 				}
 			}
@@ -114,18 +114,18 @@ func validateBookmarkable(lg *zap.Logger, report report.ClientReport) (err error
 		for _, resp := range op.Responses {
 			for _, event := range resp.Events {
 				if event.Revision <= lastProgressNotifyRevision {
-					lg.Error("Broke watch guarantee", zap.String("guarantee", "bookmarkable"), zap.Int("client", report.ClientID), zap.Int64("revision", event.Revision))
+					lg.Error("Broke watch guarantee", zap.String("guarantee", "bookmarkable"), zap.Int("client", report.ClientID), zap.Int64("revision", event.Revision), zap.Int64("watch-id", op.ID))
 					err = errBrokeBookmarkable
 				}
 				lastEventRevision = event.Revision
 			}
 			if resp.IsProgressNotify {
 				if resp.Revision < lastProgressNotifyRevision {
-					lg.Error("Broke watch guarantee", zap.String("guarantee", "bookmarkable"), zap.Int("client", report.ClientID), zap.Int64("revision", resp.Revision))
+					lg.Error("Broke watch guarantee", zap.String("guarantee", "bookmarkable"), zap.Int("client", report.ClientID), zap.Int64("revision", resp.Revision), zap.Int64("watch-id", op.ID))
 					err = errBrokeBookmarkable
 				}
 				if resp.Revision < lastEventRevision {
-					lg.Error("Broke watch guarantee", zap.String("guarantee", "bookmarkable"), zap.Int("client", report.ClientID), zap.Int64("revision", resp.Revision))
+					lg.Error("Broke watch guarantee", zap.String("guarantee", "bookmarkable"), zap.Int("client", report.ClientID), zap.Int64("revision", resp.Revision), zap.Int64("watch-id", op.ID))
 					err = errBrokeBookmarkable
 				}
 				lastProgressNotifyRevision = resp.Revision
@@ -141,7 +141,7 @@ func validateOrdered(lg *zap.Logger, report report.ClientReport) (err error) {
 		for _, resp := range op.Responses {
 			for _, event := range resp.Events {
 				if event.Revision < lastEventRevision {
-					lg.Error("Broke watch guarantee", zap.String("guarantee", "ordered"), zap.Int("client", report.ClientID), zap.Int64("revision", event.Revision))
+					lg.Error("Broke watch guarantee", zap.String("guarantee", "ordered"), zap.Int("client", report.ClientID), zap.Int64("revision", event.Revision), zap.Int64("watch-id", op.ID))
 					err = errBrokeOrdered
 				}
 				lastEventRevision = event.Revision
@@ -166,7 +166,7 @@ func validateUnique(lg *zap.Logger, expectUniqueRevision bool, report report.Cli
 					}{event.Revision, event.Key}
 				}
 				if _, found := uniqueOperations[key]; found {
-					lg.Error("Broke watch guarantee", zap.String("guarantee", "unique"), zap.Int("client", report.ClientID), zap.String("key", event.Key), zap.Int64("revision", event.Revision))
+					lg.Error("Broke watch guarantee", zap.String("guarantee", "unique"), zap.Int("client", report.ClientID), zap.String("key", event.Key), zap.Int64("revision", event.Revision), zap.Int64("watch-id", op.ID))
 					err = errBrokeUnique
 				}
 				uniqueOperations[key] = struct{}{}
@@ -182,7 +182,7 @@ func validateAtomic(lg *zap.Logger, report report.ClientReport) (err error) {
 		for _, resp := range op.Responses {
 			if len(resp.Events) > 0 {
 				if resp.Events[0].Revision == lastEventRevision {
-					lg.Error("Broke watch guarantee", zap.String("guarantee", "atomic"), zap.Int("client", report.ClientID), zap.Int64("revision", resp.Events[0].Revision))
+					lg.Error("Broke watch guarantee", zap.String("guarantee", "atomic"), zap.Int("client", report.ClientID), zap.Int64("revision", resp.Events[0].Revision), zap.Int64("watch-id", op.ID))
 					err = errBrokeAtomic
 				}
 				lastEventRevision = resp.Events[len(resp.Events)-1].Revision
@@ -218,7 +218,7 @@ func validateReliable(lg *zap.Logger, replay *model.EtcdReplay, report report.Cl
 			}
 		}
 		if !reflect.DeepEqual(wantEvents, gotEvents) {
-			lg.Error("Broke watch guarantee", zap.String("guarantee", "reliable"), zap.Int("client", report.ClientID))
+			lg.Error("Broke watch guarantee", zap.String("guarantee", "reliable"), zap.Int("client", report.ClientID), zap.Int64("watch-id", watch.ID))
 			// Directly print to console to avoid escaping newline.
 			fmt.Print(cmp.Diff(wantEvents, gotEvents))
 			err = errBrokeReliable
@@ -243,7 +243,7 @@ func validateResumable(lg *zap.Logger, replay *model.EtcdReplay, report report.C
 		firstEvent := firstWatchEvent(watch)
 		// If watch is resumable, first event it gets should the first event that happened after the requested revision.
 		if firstEvent != nil && events[index] != firstEvent.PersistedEvent {
-			lg.Error("Broke watch guarantee", zap.String("guarantee", "resumable"), zap.Int("client", report.ClientID), zap.Any("request", watch.Request), zap.Any("got-event", *firstEvent), zap.Any("want-event", events[index]))
+			lg.Error("Broke watch guarantee", zap.String("guarantee", "resumable"), zap.Int("client", report.ClientID), zap.Any("request", watch.Request), zap.Any("got-event", *firstEvent), zap.Any("want-event", events[index]), zap.Int64("watch-id", watch.ID))
 			err = errBrokeResumable
 		}
 	}
@@ -278,7 +278,7 @@ func validatePrevKV(lg *zap.Logger, replay *model.EtcdReplay, report report.Clie
 				// We allow PrevValue to be nil since in the face of compaction, etcd does not
 				// guarantee its presence.
 				if event.PrevValue != nil && *event.PrevValue != state.KeyValues[event.Key] {
-					lg.Error("Incorrect event prevValue field", zap.Int("client", report.ClientID), zap.Any("event", event), zap.Any("previousValue", state.KeyValues[event.Key]))
+					lg.Error("Incorrect event prevValue field", zap.Int("client", report.ClientID), zap.Any("event", event), zap.Any("previousValue", state.KeyValues[event.Key]), zap.Int64("watch-id", op.ID))
 					err = errBrokePrevKV
 				}
 			}
@@ -299,7 +299,7 @@ func validateIsCreate(lg *zap.Logger, replay *model.EtcdReplay, report report.Cl
 				// A create event will not have an entry in our history and a non-create
 				// event *should* have an entry in our history.
 				if _, prevKeyExists := state.KeyValues[event.Key]; event.IsCreate == prevKeyExists {
-					lg.Error("Incorrect event IsCreate field", zap.Int("client", report.ClientID), zap.Any("event", event))
+					lg.Error("Incorrect event IsCreate field", zap.Int("client", report.ClientID), zap.Any("event", event), zap.Int64("watch-id", op.ID))
 					err = errBrokeIsCreate
 				}
 			}

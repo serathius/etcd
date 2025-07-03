@@ -17,6 +17,7 @@ package model
 import "time"
 
 type WatchOperation struct {
+	ID        int64           `json:",omitempty"`
 	Request   WatchRequest    `json:",omitempty"`
 	Responses []WatchResponse `json:",omitempty"`
 }

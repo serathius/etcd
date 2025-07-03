@@ -15,6 +15,7 @@
 package mvcc
 
 import (
+	"strconv"
 	"sync"
 	"time"
 
@@ -134,6 +135,7 @@ func (s *watchableStore) watch(key, end []byte, startRev int64, id WatchID, ch c
 		ch:       ch,
 		fcs:      fcs,
 	}
+	s.lg.Info("Watch open", zap.Int64("watch", int64(id)), zap.Int64("revision", startRev))
 
 	s.mu.Lock()
 	s.revMu.RLock()
@@ -143,8 +145,10 @@ func (s *watchableStore) watch(key, end []byte, startRev int64, id WatchID, ch c
 		if startRev > wa.minRev {
 			wa.minRev = startRev
 		}
+		s.lg.Info("Watch synced", zap.Int64("watch", int64(wa.id)), zap.Int64("minRev", wa.minRev))
 		s.synced.add(wa)
 	} else {
+		s.lg.Info("Watch unsynced", zap.Int64("watch", int64(wa.id)), zap.Int64("minRev", wa.minRev))
 		slowWatcherGauge.Inc()
 		s.unsynced.add(wa)
 	}
@@ -152,7 +156,6 @@ func (s *watchableStore) watch(key, end []byte, startRev int64, id WatchID, ch c
 	s.mu.Unlock()
 
 	watcherGauge.Inc()
-
 	return wa, func() { s.cancelWatcher(wa) }
 }
 
@@ -174,6 +177,7 @@ func (s *watchableStore) cancelWatcher(wa *watcher) {
 			watcherGauge.Dec()
 			break
 		}
+		s.lg.Info("Watch cancel", zap.Int64("watch", int64(wa.id)))
 
 		if !wa.victim {
 			s.mu.Unlock()
@@ -206,14 +210,31 @@ func (s *watchableStore) cancelWatcher(wa *watcher) {
 func (s *watchableStore) Restore(b backend.Backend) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	tx := s.b.ReadTx()
+	tx.RLock()
+	scheduledCompactBefore, _ := UnsafeReadScheduledCompact(tx)
+	finishedCompactBefore, _ := UnsafeReadFinishedCompact(tx)
+	tx.RUnlock()
+	revBefore := s.Rev()
+
 	err := s.store.Restore(b)
 	if err != nil {
 		return err
 	}
+	tx = b.ReadTx()
+	tx.RLock()
+	scheduledCompactAfter, _ := UnsafeReadScheduledCompact(tx)
+	finishedCompactAfter, _ := UnsafeReadFinishedCompact(tx)
+	tx.RUnlock()
+	revAfter := s.Rev()
+
+	s.lg.Info("Server restore", zap.Int64("scheduled-compact-before", scheduledCompactBefore), zap.Int64("finished-compact-before", finishedCompactBefore), zap.Int64("revision-before", revBefore),
+		zap.Int64("scheduled-compact-after", scheduledCompactAfter), zap.Int64("finished-compact-after", finishedCompactAfter), zap.Int64("revision-after", revAfter))
 
 	for wa := range s.synced.watchers {
 		wa.restore = true
 		s.unsynced.add(wa)
+		s.lg.Info("Watch unsynced", zap.Int64("watch", int64(wa.id)), zap.Int64("minRev", wa.minRev))
 	}
 	s.synced = newWatcherGroup()
 	return nil
@@ -299,8 +320,14 @@ func (s *watchableStore) moveVictims() (moved int) {
 					newVictim = make(watcherBatch)
 				}
 				newVictim[w] = eb
+				s.lg.Info("Watch victim", zap.Int64("watch", int64(w.id)), zap.Int64("minRev", w.minRev))
 				continue
 			}
+			revs := make([]string, 0, len(eb.evs))
+			for _, event := range eb.evs {
+				revs = append(revs, strconv.FormatInt(event.Kv.ModRevision, 10))
+			}
+			s.lg.Info("Watch send", zap.Int64("watch", int64(w.id)), zap.Int64("minRev", w.minRev), zap.Strings("events", revs))
 			pendingEventsGauge.Add(float64(len(eb.evs)))
 			moved++
 		}
@@ -320,9 +347,11 @@ func (s *watchableStore) moveVictims() (moved int) {
 			}
 			if w.minRev <= curRev {
 				s.unsynced.add(w)
+				s.lg.Info("Watch unsynced", zap.Int64("watch", int64(w.id)), zap.Int64("minRev", w.minRev))
 			} else {
 				slowWatcherGauge.Dec()
 				s.synced.add(w)
+				s.lg.Info("Watch synced", zap.Int64("watch", int64(w.id)), zap.Int64("minRev", w.minRev))
 			}
 		}
 		s.store.revMu.RUnlock()
@@ -362,6 +391,11 @@ func (s *watchableStore) syncWatchers(evs []mvccpb.Event) (int, []mvccpb.Event) 
 
 	wg, minRev := s.unsynced.choose(maxWatchersPerSync, curRev, compactionRev)
 	evs = rangeEventsWithReuse(s.store.lg, s.store.b, evs, minRev, curRev+1)
+	revs := make([]string, 0, len(evs))
+	for _, event := range evs {
+		revs = append(revs, strconv.FormatInt(event.Kv.ModRevision, 10))
+	}
+	s.lg.Info("Syncing", zap.Int64("compactionRev", compactionRev), zap.Int64("curRev", curRev), zap.Int64("minRev", minRev), zap.Strings("events", revs))
 
 	victims := make(watcherBatch)
 	wb := newWatcherBatch(wg, evs)
@@ -376,6 +410,7 @@ func (s *watchableStore) syncWatchers(evs []mvccpb.Event) (int, []mvccpb.Event) 
 		eb, ok := wb[w]
 		if !ok {
 			// bring un-notified watcher to synced
+			s.lg.Info("Watch synced", zap.Int64("watch", int64(w.id)), zap.Int64("minRev", w.minRev))
 			s.synced.add(w)
 			s.unsynced.delete(w)
 			continue
@@ -386,6 +421,11 @@ func (s *watchableStore) syncWatchers(evs []mvccpb.Event) (int, []mvccpb.Event) 
 		}
 
 		if w.send(WatchResponse{WatchID: w.id, Events: eb.evs, Revision: curRev}) {
+			revs := make([]string, 0, len(eb.evs))
+			for _, event := range eb.evs {
+				revs = append(revs, strconv.FormatInt(event.Kv.ModRevision, 10))
+			}
+			s.lg.Info("Watch send", zap.Int64("watch", int64(w.id)), zap.Int64("minRev", w.minRev), zap.Strings("events", revs))
 			pendingEventsGauge.Add(float64(len(eb.evs)))
 		} else {
 			w.victim = true
@@ -393,11 +433,13 @@ func (s *watchableStore) syncWatchers(evs []mvccpb.Event) (int, []mvccpb.Event) 
 
 		if w.victim {
 			victims[w] = eb
+			s.lg.Info("Watch victim", zap.Int64("watch", int64(w.id)), zap.Int64("minRev", w.minRev))
 		} else {
 			if eb.moreRev != 0 {
 				// stay unsynced; more to read
 				continue
 			}
+			s.lg.Info("Watch synced", zap.Int64("watch", int64(w.id)), zap.Int64("minRev", w.minRev))
 			s.synced.add(w)
 		}
 		s.unsynced.delete(w)
@@ -495,11 +537,17 @@ func (s *watchableStore) notify(rev int64, evs []mvccpb.Event) {
 			)
 		}
 		if w.send(WatchResponse{WatchID: w.id, Events: eb.evs, Revision: rev}) {
+			revs := make([]string, 0, len(eb.evs))
+			for _, event := range eb.evs {
+				revs = append(revs, strconv.FormatInt(event.Kv.ModRevision, 10))
+			}
+			s.lg.Info("Watch send", zap.Int64("watch", int64(w.id)), zap.Int64("minRev", w.minRev), zap.Strings("events", revs))
 			pendingEventsGauge.Add(float64(len(eb.evs)))
 		} else {
 			// move slow watcher to victims
 			w.victim = true
 			victim[w] = eb
+			s.lg.Info("Watch victim", zap.Int64("watch", int64(w.id)), zap.Int64("minRev", w.minRev))
 			s.synced.delete(w)
 			slowWatcherGauge.Inc()
 		}
@@ -553,6 +601,7 @@ func (s *watchableStore) progressIfSync(watchers map[WatchID]*watcher, responseW
 	// notification will be broadcasted client-side if required
 	// (see dispatchEvent in client/v3/watch.go)
 	for _, w := range watchers {
+		s.lg.Info("Watch progress", zap.Int64("watch", int64(w.id)), zap.Int64("minRev", w.minRev), zap.Int64("revision", rev))
 		w.send(WatchResponse{WatchID: responseWatchID, Revision: rev})
 		return true
 	}

@@ -18,7 +18,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -39,6 +41,7 @@ type RecordingClient struct {
 	// using baseTime time-measuring operation to get monotonic clock reading
 	// see https://github.com/golang/go/blob/master/src/time/time.go#L17
 	baseTime time.Time
+	lg       *zap.Logger
 
 	watchMux        sync.Mutex
 	watchOperations []model.WatchOperation
@@ -54,7 +57,7 @@ type TimedWatchEvent struct {
 	Time time.Duration
 }
 
-func NewRecordingClient(endpoints []string, ids identity.Provider, baseTime time.Time) (*RecordingClient, error) {
+func NewRecordingClient(endpoints []string, ids identity.Provider, baseTime time.Time, lg *zap.Logger) (*RecordingClient, error) {
 	cc, err := clientv3.New(clientv3.Config{
 		Endpoints:            endpoints,
 		Logger:               zap.NewNop(),
@@ -69,6 +72,7 @@ func NewRecordingClient(endpoints []string, ids identity.Provider, baseTime time
 		client:       *cc,
 		kvOperations: model.NewAppendableHistory(ids),
 		baseTime:     baseTime,
+		lg:           lg,
 	}, nil
 }
 
@@ -290,6 +294,8 @@ func (c *RecordingClient) Watch(ctx context.Context, key string, rev int64, with
 	return c.watch(ctx, request)
 }
 
+var watchid atomic.Int64
+
 func (c *RecordingClient) watch(ctx context.Context, request model.WatchRequest) clientv3.WatchChan {
 	ops := []clientv3.OpOption{}
 	if request.WithPrefix {
@@ -308,7 +314,9 @@ func (c *RecordingClient) watch(ctx context.Context, request model.WatchRequest)
 
 	responses := []model.WatchResponse{}
 	c.watchMux.Lock()
+	watchID := watchid.Add(1)
 	c.watchOperations = append(c.watchOperations, model.WatchOperation{
+		ID:        watchID,
 		Request:   request,
 		Responses: responses,
 	})
@@ -317,8 +325,23 @@ func (c *RecordingClient) watch(ctx context.Context, request model.WatchRequest)
 
 	go func() {
 		defer close(respCh)
+		lastRev := request.Revision
+		c.lg.Info("Watch open", zap.Int("client", c.ID), zap.Int64("watch", watchID), zap.Int64("revision", request.Revision))
 		for r := range c.client.Watch(ctx, request.Key, ops...) {
-			responses = append(responses, ToWatchResponse(r, c.baseTime))
+			t := time.Since(c.baseTime)
+			responses = append(responses, ToWatchResponse(r, t))
+			if r.IsProgressNotify() {
+				lastRev = r.Header.Revision
+				c.lg.Info("Watch progress", zap.Int("client", c.ID), zap.Int64("watch", watchID), zap.Int64("revision", lastRev))
+			} else if len(r.Events) > 0 {
+				revs := make([]string, 0, len(r.Events))
+				for _, event := range r.Events {
+					revs = append(revs, strconv.FormatInt(event.Kv.ModRevision, 10))
+				}
+				c.lg.Info("Watch events", zap.Int("client", c.ID), zap.Int64("watch", watchID), zap.Strings("events", revs))
+			} else {
+				c.lg.Info("Watch response", zap.Int("client", c.ID), zap.Int64("watch", watchID), zap.Any("response", r))
+			}
 			c.watchMux.Lock()
 			c.watchOperations[index].Responses = responses
 			c.watchMux.Unlock()
@@ -328,6 +351,7 @@ func (c *RecordingClient) watch(ctx context.Context, request model.WatchRequest)
 				return
 			}
 		}
+		c.lg.Info("Watch close", zap.Int("client", c.ID), zap.Int64("watch", watchID))
 	}()
 	return respCh
 }
@@ -336,10 +360,10 @@ func (c *RecordingClient) RequestProgress(ctx context.Context) error {
 	return c.client.RequestProgress(ctx)
 }
 
-func ToWatchResponse(r clientv3.WatchResponse, baseTime time.Time) model.WatchResponse {
+func ToWatchResponse(r clientv3.WatchResponse, time time.Duration) model.WatchResponse {
 	// using time.Since time-measuring operation to get monotonic clock reading
 	// see https://github.com/golang/go/blob/master/src/time/time.go#L17
-	resp := model.WatchResponse{Time: time.Since(baseTime)}
+	resp := model.WatchResponse{Time: time}
 	for _, event := range r.Events {
 		resp.Events = append(resp.Events, toWatchEvent(*event))
 	}
@@ -380,6 +404,7 @@ func toWatchEvent(event clientv3.Event) (watch model.WatchEvent) {
 type ClientSet struct {
 	idProvider identity.Provider
 	baseTime   time.Time
+	lg         *zap.Logger
 
 	mux     sync.Mutex
 	closed  bool
@@ -387,10 +412,11 @@ type ClientSet struct {
 	reports []report.ClientReport
 }
 
-func NewSet(ids identity.Provider, baseTime time.Time) *ClientSet {
+func NewSet(ids identity.Provider, baseTime time.Time, lg *zap.Logger) *ClientSet {
 	return &ClientSet{
 		idProvider: ids,
 		baseTime:   baseTime,
+		lg:         lg,
 
 		clients: []*RecordingClient{},
 	}
@@ -402,7 +428,7 @@ func (cs *ClientSet) NewClient(endpoints []string) (*RecordingClient, error) {
 	if cs.closed {
 		return nil, errors.New("the clientset is already closed")
 	}
-	cli, err := NewRecordingClient(endpoints, cs.idProvider, cs.baseTime)
+	cli, err := NewRecordingClient(endpoints, cs.idProvider, cs.baseTime, cs.lg)
 	if err != nil {
 		return nil, err
 	}

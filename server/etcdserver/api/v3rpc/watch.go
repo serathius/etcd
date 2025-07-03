@@ -19,6 +19,7 @@ import (
 	"errors"
 	"io"
 	"math/rand"
+	"strconv"
 	"sync"
 	"time"
 
@@ -148,6 +149,7 @@ type serverWatchStream struct {
 	prevKV map[mvcc.WatchID]bool
 	// records fragmented watch IDs
 	fragment map[mvcc.WatchID]bool
+	lastRev  map[mvcc.WatchID]int64
 
 	// closec indicates the stream is closed.
 	closec chan struct{}
@@ -177,6 +179,7 @@ func (ws *watchServer) Watch(stream pb.Watch_WatchServer) (err error) {
 		progress: make(map[mvcc.WatchID]bool),
 		prevKV:   make(map[mvcc.WatchID]bool),
 		fragment: make(map[mvcc.WatchID]bool),
+		lastRev:  make(map[mvcc.WatchID]int64),
 
 		closec: make(chan struct{}),
 	}
@@ -251,6 +254,7 @@ func (sws *serverWatchStream) recvLoop() error {
 		if err != nil {
 			return err
 		}
+		sws.LogWatchRequest(req)
 
 		switch uv := req.RequestUnion.(type) {
 		case *pb.WatchRequest_CreateRequest:
@@ -328,6 +332,7 @@ func (sws *serverWatchStream) recvLoop() error {
 				if creq.Fragment {
 					sws.fragment[id] = true
 				}
+				sws.lastRev[id] = creq.StartRevision
 				sws.mu.Unlock()
 			} else {
 				id = clientv3.InvalidWatchID
@@ -368,6 +373,7 @@ func (sws *serverWatchStream) recvLoop() error {
 					delete(sws.progress, mvcc.WatchID(id))
 					delete(sws.prevKV, mvcc.WatchID(id))
 					delete(sws.fragment, mvcc.WatchID(id))
+					delete(sws.lastRev, mvcc.WatchID(id))
 					sws.mu.Unlock()
 				}
 			}
@@ -464,9 +470,10 @@ func (sws *serverWatchStream) sendLoop() {
 			var serr error
 			// gofail: var beforeSendWatchResponse struct{}
 			if !fragmented && !ok {
+				sws.LogWatchResponse(wr, "normal")
 				serr = sws.gRPCStream.Send(wr)
 			} else {
-				serr = sendFragments(wr, sws.maxRequestBytes, sws.gRPCStream.Send)
+				serr = sws.sendFragments(wr, sws.maxRequestBytes, sws.gRPCStream.Send)
 			}
 
 			if serr != nil {
@@ -490,7 +497,7 @@ func (sws *serverWatchStream) sendLoop() {
 			if !ok {
 				return
 			}
-
+			sws.LogWatchResponse(c, "control")
 			if err := sws.gRPCStream.Send(c); err != nil {
 				if isClientCtxErr(sws.gRPCStream.Context().Err(), err) {
 					sws.lg.Debug("failed to send watch control response to gRPC stream", zap.Error(err))
@@ -515,6 +522,7 @@ func (sws *serverWatchStream) sendLoop() {
 				ids[wid] = struct{}{}
 				for _, v := range pending[wid] {
 					mvcc.ReportEventReceived(len(v.Events))
+					sws.LogWatchResponse(v, "buffered")
 					if err := sws.gRPCStream.Send(v); err != nil {
 						if isClientCtxErr(sws.gRPCStream.Context().Err(), err) {
 							sws.lg.Debug("failed to send pending watch response to gRPC stream", zap.Error(err))
@@ -544,11 +552,55 @@ func (sws *serverWatchStream) sendLoop() {
 	}
 }
 
+func (sws *serverWatchStream) LogWatchRequest(req *pb.WatchRequest) {
+	switch reqUnion := req.RequestUnion.(type) {
+	case *pb.WatchRequest_CreateRequest:
+		sws.lg.Info("Watch receive", zap.String("type", "create"), zap.Any("resp", reqUnion.CreateRequest))
+	case *pb.WatchRequest_CancelRequest:
+		sws.lg.Info("Watch receive", zap.String("type", "canel"), zap.Any("resp", reqUnion.CancelRequest))
+	case *pb.WatchRequest_ProgressRequest:
+		sws.lg.Info("Watch receive", zap.String("type", "progress"), zap.Any("resp", reqUnion.ProgressRequest))
+	default:
+		sws.lg.Info("Watch receive", zap.String("type", "unknown"), zap.Any("resp", req))
+	}
+}
+
+func (sws *serverWatchStream) LogWatchResponse(wr *pb.WatchResponse, source string) {
+	sws.mu.Lock()
+	defer sws.mu.Unlock()
+
+	if wr.WatchId == clientv3.InvalidWatchID {
+		for id := range sws.lastRev {
+			sws.logWatchResponse(id, wr, source)
+		}
+	} else {
+		sws.logWatchResponse(mvcc.WatchID(wr.WatchId), wr, source)
+	}
+}
+
+func (sws *serverWatchStream) logWatchResponse(watchID mvcc.WatchID, wr *pb.WatchResponse, source string) {
+	lastRev := sws.lastRev[watchID]
+	// Progress notify
+	if len(wr.Events) == 0 && !wr.Canceled && !wr.Created && wr.CompactRevision == 0 && wr.Header.Revision != 0 {
+		lastRev = wr.Header.Revision
+		sws.lg.Info("Watch progress", zap.Int64("watch", int64(watchID)), zap.String("source", source), zap.Int64("revision", lastRev))
+	} else if len(wr.Events) != 0 {
+		revs := make([]string, 0, len(wr.Events))
+		for _, event := range wr.Events {
+			revs = append(revs, strconv.FormatInt(event.Kv.ModRevision, 10))
+		}
+		sws.lg.Info("Watch send", zap.Int64("watch", int64(watchID)), zap.String("source", source), zap.Strings("events", revs))
+	} else {
+		sws.lg.Info("Watch send", zap.Int64("watch", int64(watchID)), zap.String("source", source), zap.Any("response", wr))
+	}
+	sws.lastRev[watchID] = lastRev
+}
+
 func IsCreateEvent(e mvccpb.Event) bool {
 	return e.Type == mvccpb.PUT && e.Kv.CreateRevision == e.Kv.ModRevision
 }
 
-func sendFragments(
+func (sws *serverWatchStream) sendFragments(
 	wr *pb.WatchResponse,
 	maxRequestBytes uint,
 	sendFunc func(*pb.WatchResponse) error,
@@ -556,6 +608,7 @@ func sendFragments(
 	// no need to fragment if total request size is smaller
 	// than max request limit or response contains only one event
 	if uint(wr.Size()) < maxRequestBytes || len(wr.Events) < 2 {
+		sws.LogWatchResponse(wr, "normal")
 		return sendFunc(wr)
 	}
 
@@ -578,6 +631,7 @@ func sendFragments(
 			// last response has no more fragment
 			cur.Fragment = false
 		}
+		sws.LogWatchResponse(wr, "fragmented")
 		if err := sendFunc(&cur); err != nil {
 			return err
 		}

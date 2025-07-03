@@ -152,7 +152,7 @@ func runScenario(ctx context.Context, t *testing.T, s scenarios.TestScenario, lg
 		}
 		return nil
 	})
-	trafficSet := client.NewSet(ids, baseTime)
+	trafficSet := client.NewSet(ids, baseTime, lg)
 	defer trafficSet.Close()
 	maxRevisionChan := make(chan int64, 1)
 	g.Go(func() error {
@@ -163,7 +163,7 @@ func runScenario(ctx context.Context, t *testing.T, s scenarios.TestScenario, lg
 		lg.Info("Finished simulating Traffic", zap.Int64("max-revision", maxRevision))
 		return nil
 	})
-	watchSet := client.NewSet(ids, baseTime)
+	watchSet := client.NewSet(ids, baseTime, lg)
 	defer watchSet.Close()
 	g.Go(func() error {
 		endpoints := processEndpoints(clus)

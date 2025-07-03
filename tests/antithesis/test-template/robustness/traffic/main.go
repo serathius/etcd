@@ -102,7 +102,7 @@ func main() {
 
 func runTraffic(ctx context.Context, lg *zap.Logger, tf traffic.Traffic, hosts []string, baseTime time.Time, duration time.Duration) ([]report.ClientReport, error) {
 	ids := identity.NewIDProvider()
-	trafficSet := client.NewSet(ids, baseTime)
+	trafficSet := client.NewSet(ids, baseTime, lg)
 	defer trafficSet.Close()
 	err := traffic.CheckEmptyDatabaseAtStart(ctx, lg, hosts, trafficSet)
 	if err != nil {
@@ -122,7 +122,7 @@ func runTraffic(ctx context.Context, lg *zap.Logger, tf traffic.Traffic, hosts [
 		lg.Info("Finished simulating Traffic", zap.Int64("max-revision", maxRevision))
 		return nil
 	})
-	watchSet := client.NewSet(ids, baseTime)
+	watchSet := client.NewSet(ids, baseTime, lg)
 	defer watchSet.Close()
 	g.Go(func() error {
 		err := client.CollectClusterWatchEvents(ctx, client.CollectClusterWatchEventsParam{
