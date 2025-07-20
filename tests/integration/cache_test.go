@@ -18,6 +18,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,6 +29,7 @@ import (
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	cache "go.etcd.io/etcd/cache/v3"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/pkg/v3/stringutil"
 	"go.etcd.io/etcd/tests/v3/framework/integration"
 )
 
@@ -40,7 +43,7 @@ func TestCacheWithoutPrefixWatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New(...): %v", err)
 	}
-	t.Cleanup(c.Close)
+	t.Cleanup(func() { c.Close() })
 	if err := c.WaitReady(t.Context()); err != nil {
 		t.Fatalf("cache not ready: %v", err)
 	}
@@ -613,6 +616,68 @@ func TestCacheWatchOldRevisionCompacted(t *testing.T) {
 	case <-watchCtx.Done():
 		t.Fatal("watch did not cancel with compaction error within timeout")
 	}
+}
+
+func BenchmarkWatch(b *testing.B) {
+	integration.BeforeTest(b)
+	clus := integration.NewCluster(b, &integration.ClusterConfig{Size: 1})
+	b.Cleanup(func() { clus.Terminate(b) })
+	client := clus.Client(0)
+	ctx := b.Context()
+
+	for _, watchers := range []int{100, 1_000, 10_000} {
+		b.Run(fmt.Sprintf("watchers=%d", watchers), func(b *testing.B) {
+			for _, cacheEnabled := range []bool{true, false} {
+				b.Run(fmt.Sprintf("cache=%v", cacheEnabled), func(b *testing.B) {
+					for _, size := range []int{100, 1000, 10_000} {
+						b.Run(fmt.Sprintf("valueSizeBytes=%d", size), func(b *testing.B) {
+							watcher := client.Watcher
+							if cacheEnabled {
+								c, err := cache.New(client.Watcher, "", cache.WithHistoryWindowSize(b.N+1), cache.WithResyncInterval(5*time.Millisecond))
+								if err != nil {
+									b.Fatal(err)
+								}
+								defer c.Close()
+								err = c.WaitReady(ctx)
+								if err != nil {
+									b.Fatal(err)
+								}
+								watcher = c
+							}
+							var minRev, maxRev int64 = math.MaxInt64, 2
+							for i := 0; i < b.N; i++ {
+								resp, err := client.Put(ctx, fmt.Sprintf("%d", i), stringutil.RandString(uint(size)))
+								if err != nil {
+									b.Fatal(err)
+								}
+								minRev = min(minRev, resp.Header.Revision)
+								maxRev = max(maxRev, resp.Header.Revision)
+							}
+							b.ResetTimer()
+							benchmarkWatch(b, ctx, watcher, minRev, maxRev, watchers)
+						})
+					}
+				})
+			}
+		})
+	}
+}
+
+func benchmarkWatch(b *testing.B, ctx context.Context, client clientv3.Watcher, minRev, maxRev int64, watcherCount int) {
+	var wg sync.WaitGroup
+	for range watcherCount {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for resp := range client.Watch(ctx, "", clientv3.WithPrefix(), clientv3.WithRev(minRev)) {
+				if len(resp.Events) != 0 && resp.Events[len(resp.Events)-1].Kv.ModRevision >= maxRev {
+					return
+				}
+			}
+			b.Fatal("Unreachable")
+		}()
+	}
+	wg.Wait()
 }
 
 func generateEvents(t *testing.T, client *clientv3.Client, prefix string, n int) {

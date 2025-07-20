@@ -41,6 +41,11 @@ type Cache struct {
 	internalCtx context.Context
 }
 
+// RequestProgress implements clientv3.Watcher.
+func (c *Cache) RequestProgress(ctx context.Context) error {
+	panic("unimplemented")
+}
+
 // watchCtx collects all the knobs that both serveWatchEvents and watchRetryLoop need.
 type watchCtx struct {
 	cache           *Cache
@@ -178,9 +183,10 @@ func (c *Cache) WaitReady(ctx context.Context) error {
 }
 
 // Close cancels the private context and blocks until all goroutines return.
-func (c *Cache) Close() {
+func (c *Cache) Close() error {
 	c.stop()
 	c.waitGroup.Wait()
+	return nil
 }
 
 func serveWatchEvents(ctx context.Context, watchCtx *watchCtx) {

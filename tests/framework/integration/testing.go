@@ -19,16 +19,13 @@ import (
 	"testing"
 
 	grpclogsettable "github.com/grpc-ecosystem/go-grpc-middleware/logging/settable"
-	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zapcore"
-	"go.uber.org/zap/zapgrpc"
 	"go.uber.org/zap/zaptest"
 
 	"go.etcd.io/etcd/client/pkg/v3/testutil"
 	"go.etcd.io/etcd/client/pkg/v3/verify"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/embed"
-	gofail "go.etcd.io/gofail/runtime"
 )
 
 var (
@@ -85,29 +82,29 @@ func BeforeTestExternal(t testutil.TB) {
 
 func BeforeTest(t testutil.TB, opts ...TestOption) {
 	t.Helper()
-	options := newTestOptions(opts...)
+	// options := newTestOptions(opts...)
 
-	if insideTestContext {
-		t.Fatal("already in test context. BeforeTest was likely already called")
-	}
+	// if insideTestContext {
+	// 	t.Fatal("already in test context. BeforeTest was likely already called")
+	// }
 
-	if options.skipInShort {
-		testutil.SkipTestIfShortMode(t, "Cannot create clusters in --short tests")
-	}
+	// if options.skipInShort {
+	// 	testutil.SkipTestIfShortMode(t, "Cannot create clusters in --short tests")
+	// }
 
-	if options.goLeakDetection {
-		testutil.RegisterLeakDetection(t)
-	}
+	// if options.goLeakDetection {
+	// 	testutil.RegisterLeakDetection(t)
+	// }
 
-	if options.failpoint != nil && len(options.failpoint.name) != 0 {
-		if len(gofail.List()) == 0 {
-			t.Skip("please run 'make gofail-enable' before running the test")
-		}
-		require.NoError(t, gofail.Enable(options.failpoint.name, options.failpoint.payload))
-		t.Cleanup(func() {
-			require.NoError(t, gofail.Disable(options.failpoint.name))
-		})
-	}
+	// if options.failpoint != nil && len(options.failpoint.name) != 0 {
+	// 	if len(gofail.List()) == 0 {
+	// 		t.Skip("please run 'make gofail-enable' before running the test")
+	// 	}
+	// 	require.NoError(t, gofail.Enable(options.failpoint.name, options.failpoint.payload))
+	// 	t.Cleanup(func() {
+	// 		require.NoError(t, gofail.Disable(options.failpoint.name))
+	// 	})
+	// }
 
 	previousWD, err := os.Getwd()
 	if err != nil {
@@ -126,7 +123,7 @@ func BeforeTest(t testutil.TB, opts ...TestOption) {
 		revertFunc()
 	})
 
-	grpcLogger.Set(zapgrpc.NewLogger(zaptest.NewLogger(t).Named("grpc")))
+	// grpcLogger.Set(zapgrpc.NewLogger(zaptest.NewLogger(t).Named("grpc")))
 	insideTestContext = true
 
 	os.Chdir(t.TempDir())

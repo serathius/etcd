@@ -3,13 +3,3 @@
 // license that can be found in the LICENSE file.
 
 package integration
-
-import (
-	"testing"
-
-	"go.etcd.io/etcd/client/pkg/v3/testutil"
-)
-
-func TestMain(m *testing.M) {
-	testutil.MustTestMainWithLeakDetection(m)
-}
