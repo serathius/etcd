@@ -54,7 +54,7 @@ func TestSaveAndLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	g, err := ss.Load()
+	g, err := ss.LoadNewest()
 	if err != nil {
 		t.Errorf("err = %v, want nil", err)
 	}
@@ -106,7 +106,7 @@ func TestFailback(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	g, err := ss.Load()
+	g, err := ss.LoadNewest()
 	if err != nil {
 		t.Errorf("err = %v, want nil", err)
 	}
@@ -199,9 +199,9 @@ func TestLoadNewestSnap(t *testing.T) {
 			var err error
 			var g *raftpb.Snapshot
 			if tc.availableWALSnaps != nil {
-				g, err = ss.LoadNewestAvailable(tc.availableWALSnaps)
+				g, err = ss.LoadNewestFromList(tc.availableWALSnaps)
 			} else {
-				g, err = ss.Load()
+				g, err = ss.LoadNewest()
 			}
 			if err != nil {
 				t.Errorf("err = %v, want nil", err)
@@ -221,7 +221,7 @@ func TestNoSnapshot(t *testing.T) {
 	}
 	defer os.RemoveAll(dir)
 	ss := New(zaptest.NewLogger(t), dir)
-	_, err = ss.Load()
+	_, err = ss.LoadNewest()
 	if !errors.Is(err, ErrNoSnapshot) {
 		t.Errorf("err = %v, want %v", err, ErrNoSnapshot)
 	}
@@ -262,7 +262,7 @@ func TestAllSnapshotBroken(t *testing.T) {
 	}
 
 	ss := New(zaptest.NewLogger(t), dir)
-	_, err = ss.Load()
+	_, err = ss.LoadNewest()
 	if !errors.Is(err, ErrNoSnapshot) {
 		t.Errorf("err = %v, want %v", err, ErrNoSnapshot)
 	}

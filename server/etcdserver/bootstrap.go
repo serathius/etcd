@@ -388,7 +388,7 @@ func recoverSnapshot(cfg config.ServerConfig, st v2store.Store, be backend.Backe
 	}
 	// snapshot files can be orphaned if etcd crashes after writing them but before writing the corresponding
 	// bwal log entries
-	snapshot, err := ss.LoadNewestAvailable(walSnaps)
+	snapshot, err := ss.LoadNewestFromList(walSnaps)
 	if err != nil && !errors.Is(err, snap.ErrNoSnapshot) {
 		return nil, be, err
 	}

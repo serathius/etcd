@@ -104,14 +104,53 @@ func (s *Snapshotter) save(snapshot *raftpb.Snapshot) error {
 	return nil
 }
 
-// Load returns the newest snapshot.
-func (s *Snapshotter) Load() (*raftpb.Snapshot, error) {
-	return s.loadMatching(func(*raftpb.Snapshot) bool { return true })
+// LoadNewest returns the newest snapshot.
+func (s *Snapshotter) LoadNewest() (*raftpb.Snapshot, error) {
+	names, err := s.snapNames()
+	if err != nil {
+		return nil, err
+	}
+	if len(names) == 0 {
+		return nil, ErrNoSnapshot
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(names)))
+	var snap *raftpb.Snapshot
+	for _, name := range names {
+		if snap, err = s.loadSnap(name); err == nil {
+			return snap, nil
+		}
+	}
+	return nil, ErrNoSnapshot
 }
 
-// LoadNewestAvailable loads the newest snapshot available that is in walSnaps.
-func (s *Snapshotter) LoadNewestAvailable(walSnaps []walpb.Snapshot) (*raftpb.Snapshot, error) {
-	return s.loadMatching(func(snapshot *raftpb.Snapshot) bool {
+// LoadNewest returns the newest snapshot.
+func (s *Snapshotter) List() ([]raftpb.Snapshot, error) {
+	names, err := s.snapNames()
+	if err != nil {
+		return nil, err
+	}
+	var snaps []raftpb.Snapshot
+	for _, name := range names {
+		snap, err := s.loadSnap(name)
+		if err != nil {
+			return nil, err
+		}
+		snaps = append(snaps, *snap)
+	}
+	return snaps, nil
+}
+
+// LoadNewestFromList loads the newest snapshot available that is in walSnaps.
+func (s *Snapshotter) LoadNewestFromList(walSnaps []walpb.Snapshot) (*raftpb.Snapshot, error) {
+	names, err := s.snapNames()
+	if err != nil {
+		return nil, err
+	}
+	if len(names) == 0 {
+		return nil, ErrNoSnapshot
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(names)))
+	matchFn := func(snapshot *raftpb.Snapshot) bool {
 		m := snapshot.Metadata
 		for i := len(walSnaps) - 1; i >= 0; i-- {
 			if m.Term == walSnaps[i].Term && m.Index == walSnaps[i].Index {
@@ -119,14 +158,6 @@ func (s *Snapshotter) LoadNewestAvailable(walSnaps []walpb.Snapshot) (*raftpb.Sn
 			}
 		}
 		return false
-	})
-}
-
-// loadMatching returns the newest snapshot where matchFn returns true.
-func (s *Snapshotter) loadMatching(matchFn func(*raftpb.Snapshot) bool) (*raftpb.Snapshot, error) {
-	names, err := s.snapNames()
-	if err != nil {
-		return nil, err
 	}
 	var snap *raftpb.Snapshot
 	for _, name := range names {
@@ -212,10 +243,6 @@ func (s *Snapshotter) snapNames() ([]string, error) {
 		return nil, err
 	}
 	snaps := s.checkSuffix(filenames)
-	if len(snaps) == 0 {
-		return nil, ErrNoSnapshot
-	}
-	sort.Sort(sort.Reverse(sort.StringSlice(snaps)))
 	return snaps, nil
 }
 

@@ -15,18 +15,21 @@
 package report
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 
 	"go.uber.org/zap"
 
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/pkg/v3/pbutil"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/snap"
 	"go.etcd.io/etcd/server/v3/storage/datadir"
 	"go.etcd.io/etcd/server/v3/storage/wal"
 	"go.etcd.io/etcd/server/v3/storage/wal/walpb"
@@ -176,10 +179,24 @@ func mergeMembersEntries(memberEntries [][]raftpb.Entry) ([]raftpb.Entry, error)
 }
 
 func ReadWAL(lg *zap.Logger, dataDir string) (state raftpb.HardState, ents []raftpb.Entry, err error) {
+	snapshots, err := snap.New(lg, datadir.ToSnapDir(dataDir)).List()
+	if err != nil {
+		return state, nil, err
+	}
+	snapshots = append(snapshots, raftpb.Snapshot{Metadata: raftpb.SnapshotMetadata{Index: 0, Term: 0}})
+	slices.SortFunc(snapshots, func(a, b raftpb.Snapshot) int {
+		return cmp.Compare(a.Metadata.Index, b.Metadata.Index)
+	})
+	// Attempt to read WAL from the beggining
 	walDir := datadir.ToWALDir(dataDir)
 	repaired := false
 	for {
-		w, err := wal.OpenForRead(lg, walDir, walpb.Snapshot{Index: 0})
+		if len(snapshots) == 0 {
+			return state, nil, fmt.Errorf("no snapshot found")
+		}
+		pos := snapshots[0].Metadata
+		lg.Info("Read WAL", zap.String("dir", walDir), zap.Uint64("index", pos.Index), zap.Uint64("term", pos.Term))
+		w, err := wal.OpenForRead(lg, walDir, walpb.Snapshot{Index: pos.Index, Term: pos.Term})
 		if err != nil {
 			return state, nil, fmt.Errorf("failed to open WAL, err: %w", err)
 		}
@@ -191,7 +208,9 @@ func ReadWAL(lg *zap.Logger, dataDir string) (state raftpb.HardState, ents []raf
 				return state, ents, nil
 			}
 			if errors.Is(err, wal.ErrSliceOutOfRange) {
-				return state, nil, fmt.Errorf("failed to read WAL, err: %w", err)
+				// Should pick the next snapshot
+				snapshots = snapshots[1:]
+				continue
 			}
 			// we can only repair ErrUnexpectedEOF and we never repair twice.
 			if repaired || !errors.Is(err, io.ErrUnexpectedEOF) {

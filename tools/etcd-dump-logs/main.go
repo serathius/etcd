@@ -131,7 +131,7 @@ func readUsingReadAll(lg *zap.Logger, startFromIndex bool, startIndex *uint64, e
 	} else {
 		if *snapfile == "" {
 			ss := snap.New(lg, snapDir(dataDir))
-			snapshot, err = ss.Load()
+			snapshot, err = ss.LoadNewest()
 		} else {
 			snapshot, err = snap.Read(lg, filepath.Join(snapDir(dataDir), *snapfile))
 		}

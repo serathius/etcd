@@ -112,7 +112,7 @@ func (st *storage) MinimalEtcdVersion() *semver.Version {
 	defer st.mux.Unlock()
 	walsnap := walpb.Snapshot{}
 
-	sn, err := st.s.Load()
+	sn, err := st.s.LoadNewest()
 	if err != nil && !errors.Is(err, snap.ErrNoSnapshot) {
 		panic(err)
 	}
