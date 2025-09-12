@@ -56,5 +56,6 @@ RUN CGO_ENABLED=1 make build
 
 FROM ubuntu:24.04
 COPY --from=build /etcd_instrumented/ /etcd
+WORKDIR /etcd/client
 
 CMD ["/etcd/customer/bin/etcd"]
