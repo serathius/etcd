@@ -36,10 +36,14 @@ spec:
         app: etcd
     spec:
       terminationGracePeriodSeconds: 10
+      # hostNetwork: true
       containers:
         - name: etcd-server
-          image: etcd-server:latest
-          imagePullPolicy: Never
+          # image: registry.k8s.io/etcd:3.6.4-0
+          image: registry.k8s.io/etcd:3.4.13-3
+          command:
+          - /usr/local/bin/etcd
+          - --quota-backend-bytes=16106127360
           env:
             - name: ETCD_NAME
               valueFrom:
@@ -65,14 +69,6 @@ spec:
               value: "new"
             - name: ETCD_DATA_DIR
               value: "/var/etcd/data"
-            - name: ETCD_SNAPSHOT_CATCHUP_ENTRIES
-              value: "100"
-            - name: ETCD_SNAPSHOT_COUNT
-              value: "50"
-            - name: ETCD_COMPACTION_BATCH_LIMIT
-              value: "10"
-            - name: ETCD_VERIFY
-              value: "all"
           ports:
             - containerPort: 2379
               name: client
@@ -80,14 +76,14 @@ spec:
             - containerPort: 2380
               name: peer
               protocol: TCP
-          readinessProbe:
-            httpGet:
-              path: /readyz
-              port: client
-          livenessProbe:
-            httpGet:
-              path: /livez
-              port: client
+          # readinessProbe:
+          #   httpGet:
+          #     path: /readyz
+          #     port: client
+          # livenessProbe:
+          #   httpGet:
+          #     path: /livez
+          #     port: client
           volumeMounts:
             - name: data
               mountPath: /var/etcd/data
@@ -95,9 +91,9 @@ spec:
     - metadata:
         name: data
       spec:
-        storageClassName: standard
+        storageClassName: premium-rwo
         accessModes:
           - ReadWriteOnce
         resources:
           requests:
-            storage: 200Mi
+            storage: 20Gi
