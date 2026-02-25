@@ -1061,6 +1061,13 @@ func (s *EtcdServer) requestCurrentIndex(leaderChangedNotifier <-chan struct{}, 
 				slowReadIndex.Inc()
 				continue
 			}
+			// Check if leader changed again as when multiple channels are ready, select picks randomly.
+			select {
+			case <-leaderChangedNotifier:
+				readIndexFailed.Inc()
+				return 0, errors.ErrLeaderChanged
+			default:
+			}
 			return rs.Index, nil
 		case <-leaderChangedNotifier:
 			readIndexFailed.Inc()
