@@ -88,6 +88,9 @@ var (
 	CompactionFrequent = Compaction{
 		Period: 100 * time.Millisecond,
 	}
+	DefragDefault = Defrag{
+		Period: 1 * time.Second,
+	}
 )
 
 func SimulateTraffic(ctx context.Context, t *testing.T, lg *zap.Logger, clus *e2e.EtcdProcessCluster, profile Profile, traffic Traffic, failpointInjected <-chan report.FailpointInjection, clientSet *client.ClientSet) []report.ClientReport {
@@ -138,6 +141,10 @@ func SimulateTraffic(ctx context.Context, t *testing.T, lg *zap.Logger, clus *e2
 			Period: profile.Compaction.Period,
 			Finish: finish,
 		})
+		require.NoError(t, err)
+	}
+	if profile.Defrag != nil {
+		err = SimulateDefragTraffic(ctx, &wg, profile.Defrag, endpoints, clientSet, finish)
 		require.NoError(t, err)
 	}
 	var fr *report.FailpointInjection
@@ -254,6 +261,43 @@ func SimulateCompactionTraffic(ctx context.Context, wg *sync.WaitGroup, profile 
 	return nil
 }
 
+func SimulateDefragTraffic(ctx context.Context, wg *sync.WaitGroup, profile *Defrag, endpoints []string, clientSet *client.ClientSet, finish <-chan struct{}) error {
+	for _, h := range endpoints {
+		c, err := clientSet.NewClient([]string{h})
+		if err != nil {
+			return err
+		}
+		wg.Add(1)
+		go func(c *client.RecordingClient) {
+			defer wg.Done()
+			defer c.Close()
+			runDefragLoop(ctx, c, profile.Period, finish)
+		}(c)
+	}
+	return nil
+}
+
+func runDefragLoop(ctx context.Context, c *client.RecordingClient, period time.Duration, finish <-chan struct{}) {
+	jittered := time.Duration(random.RandRange(int64(period-period/2), int64(period+period/2)))
+	ticker := time.NewTicker(jittered)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-finish:
+			return
+		case <-ticker.C:
+		}
+		dctx, cancel := context.WithTimeout(ctx, RequestTimeout)
+		_, err := c.Defragment(dctx)
+		cancel()
+		if err != nil {
+			continue
+		}
+	}
+}
+
 func CalculateWatchStats(reports []report.ClientReport, start, end time.Duration) (ws watchStats) {
 	ws.Period = end - start
 	if ws.Period <= 0 {
@@ -365,6 +409,7 @@ type Profile struct {
 	KeyValue   *KeyValue
 	Watch      *Watch
 	Compaction *Compaction
+	Defrag     *Defrag
 }
 
 type KeyValue struct {
@@ -383,6 +428,10 @@ type Watch struct {
 }
 
 type Compaction struct {
+	Period time.Duration
+}
+
+type Defrag struct {
 	Period time.Duration
 }
 

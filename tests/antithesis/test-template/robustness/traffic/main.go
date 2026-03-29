@@ -51,6 +51,7 @@ var (
 		},
 		Watch:      &traffic.WatchDefault,
 		Compaction: &traffic.CompactionDefault,
+		Defrag:     &traffic.DefragDefault,
 	}
 	trafficNames = []string{
 		"etcd",
@@ -186,38 +187,14 @@ func simulateTraffic(ctx context.Context, lg *zap.Logger, tf traffic.Traffic, ho
 			os.Exit(1)
 		}
 	}
-	defragPeriod := profile.Compaction.Period * time.Duration(len(hosts))
-	for _, h := range hosts {
-		c := connect(clientSet, []string{h})
-		wg.Add(1)
-		go func(c *client.RecordingClient) {
-			defer wg.Done()
-			defer c.Close()
-			runDefragLoop(ctx, c, defragPeriod, finish)
-		}(c)
+	if profile.Defrag != nil {
+		err := traffic.SimulateDefragTraffic(ctx, &wg, profile.Defrag, hosts, clientSet, finish)
+		if err != nil {
+			assert.Unreachable("Client failed to connect to an etcd host", map[string]any{"endpoints": hosts, "error": err})
+			os.Exit(1)
+		}
 	}
 	wg.Wait()
-}
-
-func runDefragLoop(ctx context.Context, c *client.RecordingClient, period time.Duration, finish <-chan struct{}) {
-	jittered := time.Duration(robustnessrand.RandRange(int64(period-period/2), int64(period+period/2)))
-	ticker := time.NewTicker(jittered)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-finish:
-			return
-		case <-ticker.C:
-		}
-		dctx, cancel := context.WithTimeout(ctx, traffic.RequestTimeout)
-		_, err := c.Defragment(dctx)
-		cancel()
-		if err != nil {
-			continue
-		}
-	}
 }
 
 func connect(cs *client.ClientSet, endpoints []string) *client.RecordingClient {
