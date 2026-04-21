@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
 	"os"
 	"reflect"
@@ -26,11 +27,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang/protobuf/proto" //nolint:staticcheck // TODO: remove for a supported version
+	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/testing/protocmp"
 
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
@@ -1511,6 +1515,8 @@ func TestV3RangeRequest(t *testing.T) {
 					t.Errorf("#%d.%d: Range error: %v", i, j, err)
 					continue
 				}
+				assertRangeStreamMatchesRange(t, kvc, &req, resp)
+
 				if len(resp.Kvs) != len(tt.wresps[j]) {
 					t.Errorf("#%d.%d: bad len(resp.Kvs). got = %d, want = %d, ", i, j, len(resp.Kvs), len(tt.wresps[j]))
 					continue
@@ -1532,6 +1538,140 @@ func TestV3RangeRequest(t *testing.T) {
 					t.Errorf("#%d.%d: bad header revision. got = %d. want = %d", i, j, resp.Header.Revision, wrev)
 				}
 			}
+		})
+	}
+}
+
+// assertRangeStreamMatchesRange calls RangeStream with the same request and
+// asserts the merged streamed response is identical to the unary Range response.
+func assertRangeStreamMatchesRange(t *testing.T, kvc pb.KVClient, req *pb.RangeRequest, expected *pb.RangeResponse) {
+	t.Helper()
+
+	// RangeStream does not support custom sort orders or revision filters.
+	if req.SortOrder != pb.RangeRequest_NONE && (req.SortOrder != pb.RangeRequest_ASCEND || req.SortTarget != pb.RangeRequest_KEY) {
+		return
+	}
+	if req.MaxModRevision != 0 || req.MinModRevision != 0 || req.MinCreateRevision != 0 || req.MaxCreateRevision != 0 {
+		return
+	}
+
+	stream, err := kvc.RangeStream(t.Context(), req)
+	if status.Code(err) == codes.Unimplemented {
+		return
+	}
+	require.NoError(t, err)
+
+	got := &pb.RangeResponse{}
+	for {
+		chunk, rerr := stream.Recv()
+		if errors.Is(rerr, io.EOF) {
+			break
+		}
+		if status.Code(rerr) == codes.Unimplemented {
+			return
+		}
+		require.NoError(t, rerr)
+		proto.Merge(got, chunk.RangeResponse)
+	}
+	require.Emptyf(t, cmp.Diff(expected, got, protocmp.Transform()),
+		"RangeStream response must match Range response")
+}
+
+// TestV3RangeStreamCount verifies Count semantics on the last streamed chunk,
+// including the case where the stream truncates at Limit with more matching
+// keys pending (exercises the CountOnly fallback query at the pinned revision).
+func TestV3RangeStreamCount(t *testing.T) {
+	integration.BeforeTest(t)
+	clus := integration.NewCluster(t, &integration.ClusterConfig{Size: 1})
+	defer clus.Terminate(t)
+
+	kvc := integration.ToGRPC(clus.RandClient()).KV
+	const nKeys = 25
+	for i := 0; i < nKeys; i++ {
+		_, err := kvc.Put(t.Context(), &pb.PutRequest{
+			Key:   []byte(fmt.Sprintf("k%02d", i)),
+			Value: []byte("v"),
+		})
+		require.NoError(t, err)
+	}
+
+	// The server-side chunker starts at Limit=10 and adapts from there, so
+	// nKeys=25 reliably produces multi-chunk responses for unlimited/large
+	// limits, while small limits fit in the first chunk.
+	tests := []struct {
+		name        string
+		limit       int64
+		wantCount   int64
+		wantMore    bool
+		wantKeys    int
+		wantMinRecv int
+	}{
+		{
+			name:        "unlimited exhausts with running count",
+			limit:       0,
+			wantCount:   nKeys,
+			wantMore:    false,
+			wantKeys:    nKeys,
+			wantMinRecv: 2,
+		},
+		{
+			name:        "limit below total truncates with fallback count",
+			limit:       5,
+			wantCount:   nKeys,
+			wantMore:    true,
+			wantKeys:    5,
+			wantMinRecv: 1,
+		},
+		{
+			name:        "limit equal to total, no truncation",
+			limit:       nKeys,
+			wantCount:   nKeys,
+			wantMore:    false,
+			wantKeys:    nKeys,
+			wantMinRecv: 2,
+		},
+		{
+			name:        "limit above total, exhausts early",
+			limit:       100,
+			wantCount:   nKeys,
+			wantMore:    false,
+			wantKeys:    nKeys,
+			wantMinRecv: 2,
+		},
+		{
+			name:        "limit at first-chunk boundary with fallback count",
+			limit:       10,
+			wantCount:   nKeys,
+			wantMore:    true,
+			wantKeys:    10,
+			wantMinRecv: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stream, err := kvc.RangeStream(t.Context(), &pb.RangeRequest{
+				Key:      []byte("k00"),
+				RangeEnd: []byte("l"),
+				Limit:    tt.limit,
+			})
+			require.NoError(t, err)
+
+			merged := &pb.RangeResponse{}
+			recvs := 0
+			for {
+				chunk, rerr := stream.Recv()
+				if errors.Is(rerr, io.EOF) {
+					break
+				}
+				require.NoError(t, rerr)
+				recvs++
+				proto.Merge(merged, chunk.RangeResponse)
+			}
+			require.Equalf(t, tt.wantCount, merged.Count, "Count")
+			require.Equalf(t, tt.wantMore, merged.More, "More")
+			require.Lenf(t, merged.Kvs, tt.wantKeys, "kv count")
+			require.GreaterOrEqualf(t, recvs, tt.wantMinRecv, "chunk count")
 		})
 	}
 }
