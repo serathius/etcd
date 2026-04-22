@@ -1515,7 +1515,10 @@ func TestV3RangeRequest(t *testing.T) {
 					t.Errorf("#%d.%d: Range error: %v", i, j, err)
 					continue
 				}
-				assertRangeStreamMatchesRange(t, kvc, &req, resp)
+				if got := rangeStream(t, kvc, &req); got != nil {
+					require.Emptyf(t, cmp.Diff(resp, got, protocmp.Transform()),
+						"RangeStream response must match Range response")
+				}
 
 				if len(resp.Kvs) != len(tt.wresps[j]) {
 					t.Errorf("#%d.%d: bad len(resp.Kvs). got = %d, want = %d, ", i, j, len(resp.Kvs), len(tt.wresps[j]))
@@ -1542,22 +1545,22 @@ func TestV3RangeRequest(t *testing.T) {
 	}
 }
 
-// assertRangeStreamMatchesRange calls RangeStream with the same request and
-// asserts the merged streamed response is identical to the unary Range response.
-func assertRangeStreamMatchesRange(t *testing.T, kvc pb.KVClient, req *pb.RangeRequest, expected *pb.RangeResponse) {
+// rangeStream calls RangeStream and returns the merged response, or nil if
+// the request uses features RangeStream does not support or the server does
+// not implement the RPC.
+func rangeStream(t *testing.T, kvc pb.KVClient, req *pb.RangeRequest) *pb.RangeResponse {
 	t.Helper()
 
-	// RangeStream does not support custom sort orders or revision filters.
 	if req.SortOrder != pb.RangeRequest_NONE && (req.SortOrder != pb.RangeRequest_ASCEND || req.SortTarget != pb.RangeRequest_KEY) {
-		return
+		return nil
 	}
 	if req.MaxModRevision != 0 || req.MinModRevision != 0 || req.MinCreateRevision != 0 || req.MaxCreateRevision != 0 {
-		return
+		return nil
 	}
 
 	stream, err := kvc.RangeStream(t.Context(), req)
 	if status.Code(err) == codes.Unimplemented {
-		return
+		return nil
 	}
 	require.NoError(t, err)
 
@@ -1568,13 +1571,12 @@ func assertRangeStreamMatchesRange(t *testing.T, kvc pb.KVClient, req *pb.RangeR
 			break
 		}
 		if status.Code(rerr) == codes.Unimplemented {
-			return
+			return nil
 		}
 		require.NoError(t, rerr)
 		proto.Merge(got, chunk.RangeResponse)
 	}
-	require.Emptyf(t, cmp.Diff(expected, got, protocmp.Transform()),
-		"RangeStream response must match Range response")
+	return got
 }
 
 // TestV3RangeStreamCount verifies Count semantics on the last streamed chunk,
@@ -1655,6 +1657,9 @@ func TestV3RangeStreamCount(t *testing.T) {
 				RangeEnd: []byte("l"),
 				Limit:    tt.limit,
 			})
+			if status.Code(err) == codes.Unimplemented {
+				t.Skip("RangeStream not supported by this backend")
+			}
 			require.NoError(t, err)
 
 			merged := &pb.RangeResponse{}
@@ -1663,6 +1668,9 @@ func TestV3RangeStreamCount(t *testing.T) {
 				chunk, rerr := stream.Recv()
 				if errors.Is(rerr, io.EOF) {
 					break
+				}
+				if status.Code(rerr) == codes.Unimplemented {
+					t.Skip("RangeStream not supported by this backend")
 				}
 				require.NoError(t, rerr)
 				recvs++
