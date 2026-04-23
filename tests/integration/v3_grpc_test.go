@@ -1288,6 +1288,11 @@ func TestV3RangeRequest(t *testing.T) {
 		wresps  [][]string
 		wmores  []bool
 		wcounts []int64
+
+		// streamUnsupported[j] marks request reqs[j] as using features that
+		// RangeStream intentionally does not support (non-key-ascending sort,
+		// min/max mod/create revision filters). Must match len(reqs).
+		streamUnsupported []bool
 	}{
 		{
 			"single key",
@@ -1305,6 +1310,7 @@ func TestV3RangeRequest(t *testing.T) {
 			},
 			[]bool{false, false},
 			[]int64{1, 0},
+			[]bool{false, false},
 		},
 		{
 			"multi-key",
@@ -1334,6 +1340,7 @@ func TestV3RangeRequest(t *testing.T) {
 			},
 			[]bool{false, false, false, false, false, false},
 			[]int64{5, 2, 0, 0, 0, 5},
+			[]bool{false, false, false, false, false, false},
 		},
 		{
 			"revision",
@@ -1353,6 +1360,7 @@ func TestV3RangeRequest(t *testing.T) {
 			},
 			[]bool{false, false, false, false},
 			[]int64{5, 0, 1, 2},
+			[]bool{false, false, false, false},
 		},
 		{
 			"limit",
@@ -1376,6 +1384,7 @@ func TestV3RangeRequest(t *testing.T) {
 			},
 			[]bool{true, true, false, false},
 			[]int64{3, 3, 3, 3},
+			[]bool{false, false, false, false},
 		},
 		{
 			"sort",
@@ -1429,6 +1438,8 @@ func TestV3RangeRequest(t *testing.T) {
 			},
 			[]bool{true, true, true, true, false, false},
 			[]int64{4, 4, 4, 4, 0, 4},
+			// Only ASCEND+KEY (index 0) and SortOrder_NONE (index 5) are supported by RangeStream.
+			[]bool{false, true, true, true, true, false},
 		},
 		{
 			"min/max mod rev",
@@ -1461,6 +1472,7 @@ func TestV3RangeRequest(t *testing.T) {
 			},
 			[]bool{false, false, false, false},
 			[]int64{5, 5, 5, 5},
+			[]bool{true, true, true, true},
 		},
 		{
 			"min/max create rev",
@@ -1493,6 +1505,7 @@ func TestV3RangeRequest(t *testing.T) {
 			},
 			[]bool{false, false, false, false},
 			[]int64{3, 3, 3, 3},
+			[]bool{true, true, true, true},
 		},
 	}
 
@@ -1515,7 +1528,8 @@ func TestV3RangeRequest(t *testing.T) {
 					t.Errorf("#%d.%d: Range error: %v", i, j, err)
 					continue
 				}
-				if got := rangeStream(t, kvc, &req); got != nil {
+				if !integration.ThroughProxy && !tt.streamUnsupported[j] {
+					got := rangeStream(t, kvc, &req)
 					require.Emptyf(t, cmp.Diff(resp, got, protocmp.Transform()),
 						"RangeStream response must match Range response")
 				}
@@ -1545,23 +1559,11 @@ func TestV3RangeRequest(t *testing.T) {
 	}
 }
 
-// rangeStream calls RangeStream and returns the merged response, or nil if
-// the request uses features RangeStream does not support or the server does
-// not implement the RPC.
+// rangeStream calls RangeStream and returns the merged response.
 func rangeStream(t *testing.T, kvc pb.KVClient, req *pb.RangeRequest) *pb.RangeResponse {
 	t.Helper()
 
-	if req.SortOrder != pb.RangeRequest_NONE && (req.SortOrder != pb.RangeRequest_ASCEND || req.SortTarget != pb.RangeRequest_KEY) {
-		return nil
-	}
-	if req.MaxModRevision != 0 || req.MinModRevision != 0 || req.MinCreateRevision != 0 || req.MaxCreateRevision != 0 {
-		return nil
-	}
-
 	stream, err := kvc.RangeStream(t.Context(), req)
-	if status.Code(err) == codes.Unimplemented {
-		return nil
-	}
 	require.NoError(t, err)
 
 	got := &pb.RangeResponse{}
@@ -1569,9 +1571,6 @@ func rangeStream(t *testing.T, kvc pb.KVClient, req *pb.RangeRequest) *pb.RangeR
 		chunk, rerr := stream.Recv()
 		if errors.Is(rerr, io.EOF) {
 			break
-		}
-		if status.Code(rerr) == codes.Unimplemented {
-			return nil
 		}
 		require.NoError(t, rerr)
 		proto.Merge(got, chunk.RangeResponse)
@@ -1583,6 +1582,9 @@ func rangeStream(t *testing.T, kvc pb.KVClient, req *pb.RangeRequest) *pb.RangeR
 // including the case where the stream truncates at Limit with more matching
 // keys pending (exercises the CountOnly fallback query at the pinned revision).
 func TestV3RangeStreamCount(t *testing.T) {
+	if integration.ThroughProxy {
+		t.Skip("RangeStream is not supported by the gRPC proxy")
+	}
 	integration.BeforeTest(t)
 	clus := integration.NewCluster(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
@@ -1657,9 +1659,6 @@ func TestV3RangeStreamCount(t *testing.T) {
 				RangeEnd: []byte("l"),
 				Limit:    tt.limit,
 			})
-			if status.Code(err) == codes.Unimplemented {
-				t.Skip("RangeStream not supported by this backend")
-			}
 			require.NoError(t, err)
 
 			merged := &pb.RangeResponse{}
@@ -1668,9 +1667,6 @@ func TestV3RangeStreamCount(t *testing.T) {
 				chunk, rerr := stream.Recv()
 				if errors.Is(rerr, io.EOF) {
 					break
-				}
-				if status.Code(rerr) == codes.Unimplemented {
-					t.Skip("RangeStream not supported by this backend")
 				}
 				require.NoError(t, rerr)
 				recvs++

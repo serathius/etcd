@@ -201,99 +201,79 @@ func (s *EtcdServer) rangeStream(ctx context.Context, r *pb.RangeRequest, rs pb.
 	}
 	originalKey := r.Key
 	originalRangeEnd := r.RangeEnd
-	r.Limit = 10
+	r.Limit = initialStreamChunkLimit
 	if r.Limit > totalLimit {
 		r.Limit = totalLimit
 	}
-	resp, _, err := txn.Range(ctx, s.Logger(), s.KV(), r, false)
-	if err != nil {
-		return err
-	}
-	if r.Revision == 0 {
-		r.Revision = resp.Header.Revision
-	}
-	count := int64(len(resp.Kvs))
-	// TODO: Send only if responses of size MaxRequestBytes size
-	if !resp.More || count == totalLimit {
-		var finalCount int64
-		finalCount, err = s.resolveStreamCount(ctx, originalKey, originalRangeEnd, r.Revision, count, resp.More)
+
+	count := int64(0)
+	first := true
+	for {
+		resp, _, err := txn.Range(ctx, s.Logger(), s.KV(), r, false)
 		if err != nil {
 			return err
 		}
-		return rs.Send(&pb.RangeStreamResponse{
-			RangeResponse: &pb.RangeResponse{
-				Header: &pb.ResponseHeader{Revision: resp.Header.Revision},
-				More:   resp.More,
-				Count:  finalCount,
-				Kvs:    resp.Kvs,
-			},
-		})
-	}
-	err = rs.Send(&pb.RangeStreamResponse{
-		RangeResponse: &pb.RangeResponse{
-			Header: &pb.ResponseHeader{Revision: resp.Header.Revision},
-			Kvs:    resp.Kvs,
-		},
-	})
-	if err != nil {
-		return err
-	}
+		if r.Revision == 0 {
+			r.Revision = resp.Header.Revision
+		}
+		count += int64(len(resp.Kvs))
+		done := !resp.More || count == totalLimit
 
-	for resp.More && count < totalLimit {
+		out := &pb.RangeResponse{Kvs: resp.Kvs}
+		if first {
+			out.Header = &pb.ResponseHeader{Revision: resp.Header.Revision}
+		}
+		if done {
+			// resp.More=false: range exhausted, count is exact.
+			// resp.More=true:  truncated at totalLimit, query for true count.
+			out.More = resp.More
+			if resp.More {
+				total, cerr := s.countStreamTotal(ctx, originalKey, originalRangeEnd, r.Revision)
+				if cerr != nil {
+					return cerr
+				}
+				out.Count = total
+			} else {
+				out.Count = count
+			}
+		}
+		if err := rs.Send(&pb.RangeStreamResponse{RangeResponse: out}); err != nil {
+			return err
+		}
+		if done {
+			return nil
+		}
+
 		r.Key = append(resp.Kvs[len(resp.Kvs)-1].Key, '\x00')
-
-		if resp.Size() < int(s.Cfg.MaxRequestBytes)/2 {
-			r.Limit *= 2
-		} else if resp.Size() > int(s.Cfg.MaxRequestBytes)*2 {
-			r.Limit /= 2
-		}
-		if r.Limit == 0 {
-			r.Limit = 1
-		}
+		r.Limit = adjustChunkLimit(r.Limit, resp.Size(), int(s.Cfg.MaxRequestBytes))
 		if count+r.Limit > totalLimit {
 			r.Limit = totalLimit - count
 		}
-
-		resp, _, err = txn.Range(ctx, s.Logger(), s.KV(), r, false)
-		if err != nil {
-			return err
-		}
-		count += int64(len(resp.Kvs))
-		// TODO: Chunk output
-		if !resp.More || count == totalLimit {
-			var finalCount int64
-			finalCount, err = s.resolveStreamCount(ctx, originalKey, originalRangeEnd, r.Revision, count, resp.More)
-			if err != nil {
-				return err
-			}
-			return rs.Send(&pb.RangeStreamResponse{
-				RangeResponse: &pb.RangeResponse{
-					More:  resp.More,
-					Count: finalCount,
-					Kvs:   resp.Kvs,
-				},
-			})
-		}
-		err = rs.Send(&pb.RangeStreamResponse{
-			RangeResponse: &pb.RangeResponse{
-				Kvs: resp.Kvs,
-			},
-		})
-		if err != nil {
-			return err
-		}
+		first = false
 	}
-	return nil
 }
 
-// resolveStreamCount returns the total matching count for a RangeStream.
-// When hasMore is false the stream exhausted the range, so runningCount is
-// exact. Otherwise the stream stopped at totalLimit with more matches pending,
-// and a CountOnly query at the pinned revision is issued to get the true total.
-func (s *EtcdServer) resolveStreamCount(ctx context.Context, key, rangeEnd []byte, revision, runningCount int64, hasMore bool) (int64, error) {
-	if !hasMore {
-		return runningCount, nil
+const initialStreamChunkLimit = 10
+
+// adjustChunkLimit tunes the next RangeStream chunk's Limit based on the
+// previous chunk's wire size relative to maxRequestBytes: it doubles when well
+// under half and halves when well over double, and never returns zero.
+func adjustChunkLimit(cur int64, respSize, maxRequestBytes int) int64 {
+	switch {
+	case respSize < maxRequestBytes/2:
+		cur *= 2
+	case respSize > maxRequestBytes*2:
+		cur /= 2
 	}
+	if cur == 0 {
+		cur = 1
+	}
+	return cur
+}
+
+// countStreamTotal issues a CountOnly query at the pinned revision to compute
+// the true total matching count when a RangeStream truncated at totalLimit.
+func (s *EtcdServer) countStreamTotal(ctx context.Context, key, rangeEnd []byte, revision int64) (int64, error) {
 	countReq := &pb.RangeRequest{
 		Key:       key,
 		RangeEnd:  rangeEnd,
