@@ -213,9 +213,11 @@ func (s *EtcdServer) rangeStream(ctx context.Context, r *pb.RangeRequest, rs pb.
 		if err != nil {
 			return err
 		}
+
 		if r.Revision == 0 {
 			r.Revision = resp.Header.Revision
 		}
+
 		count += int64(len(resp.Kvs))
 		done := !resp.More || count == totalLimit
 
@@ -223,23 +225,22 @@ func (s *EtcdServer) rangeStream(ctx context.Context, r *pb.RangeRequest, rs pb.
 		if first {
 			out.Header = &pb.ResponseHeader{Revision: resp.Header.Revision}
 		}
+
 		if done {
-			// resp.More=false: range exhausted, count is exact.
-			// resp.More=true:  truncated at totalLimit, query for true count.
 			out.More = resp.More
+			out.Count = count
 			if resp.More {
-				total, cerr := s.countStreamTotal(ctx, originalKey, originalRangeEnd, r.Revision)
-				if cerr != nil {
+				var cerr error
+				if out.Count, cerr = s.countStreamTotal(ctx, originalKey, originalRangeEnd, r.Revision); cerr != nil {
 					return cerr
 				}
-				out.Count = total
-			} else {
-				out.Count = count
 			}
 		}
+
 		if err := rs.Send(&pb.RangeStreamResponse{RangeResponse: out}); err != nil {
 			return err
 		}
+
 		if done {
 			return nil
 		}
