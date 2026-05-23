@@ -91,7 +91,7 @@ func printRec(rec *walpb.Record, fromIndex *uint64, out io.Writer) {
 		fmt.Fprintf(out, "CRC: %d\n", rec.GetCrc())
 	case wal.EntryType:
 		e := wal.MustUnmarshalEntry(rec.Data)
-		if fromIndex == nil || e.Index >= *fromIndex {
+		if fromIndex == nil || (e.Index != nil && *e.Index >= *fromIndex) {
 			fmt.Fprintf(out, "Entry: %s\n", e.String())
 		}
 	case wal.SnapshotType:
@@ -102,8 +102,8 @@ func printRec(rec *walpb.Record, fromIndex *uint64, out io.Writer) {
 		}
 	case wal.StateType:
 		var state raftpb.HardState
-		pbutil.MustUnmarshal(&state, rec.Data)
-		if fromIndex == nil || state.Commit >= *fromIndex {
+		pbutil.MustUnmarshalMessage(&state, rec.Data)
+		if fromIndex == nil || (state.Commit != nil && *state.Commit >= *fromIndex) {
 			fmt.Fprintf(out, "HardState: %s\n", state.String())
 		}
 	default:

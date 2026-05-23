@@ -29,36 +29,36 @@ func Test_readRaw(t *testing.T) {
 	readRaw(nil, walDir(path), &out)
 	assertReadRawOutput(t, `CRC: 0
 Metadata: 
-Snapshot: index:0 term:0
-Entry: Term:1 Index:1 Type:EntryConfChange Data:"\010\001\020\000\030\002\"\000" 
-Entry: Term:2 Index:2 Type:EntryConfChange Data:"\010\002\020\001\030\002\"\000" 
-Entry: Term:2 Index:3 Type:EntryConfChange Data:"\010\003\020\002\030\002\"\000" 
-Entry: Term:2 Index:4 Type:EntryConfChange Data:"\010\004\020\003\030\003\"\000" 
-Entry: Term:4 Index:10 Data:"\010\005\032\025\n\0011\022\002hi\030\006 \001(\001X\240\234\001h\240\234\001" 
-Entry: Term:5 Index:11 Data:"\010\006\"\020\n\004foo1\022\004bar1\030\0010\001" 
-Entry: Term:6 Index:12 Data:"\010\007*\010\n\0010\022\0019\030\001" 
-Entry: Term:7 Index:13 Data:"\010\0102\024\022\010\032\006\n\001a\022\001b\032\010\032\006\n\001a\022\001b" 
-Entry: Term:8 Index:14 Data:"\010\t:\002\020\001" 
-Entry: Term:9 Index:15 Data:"\010\nB\004\010\001\020\001" 
-Entry: Term:10 Index:16 Data:"\010\013J\002\010\002" 
-Entry: Term:11 Index:17 Data:"\010\014R\006\010\003\020\004\030\005" 
-Entry: Term:12 Index:18 Data:"\010\r\302>\000" 
-Entry: Term:13 Index:19 Data:"\010\016\232?\000" 
-Entry: Term:14 Index:20 Data:"\010\017\242?\031\n\006myname\022\010password\032\005token" 
-Entry: Term:15 Index:21 Data:"\010\020\342D\020\n\005name1\022\005pass1\032\000" 
-Entry: Term:16 Index:22 Data:"\010\021\352D\007\n\005name1" 
-Entry: Term:17 Index:23 Data:"\010\022\362D\007\n\005name1" 
-Entry: Term:18 Index:24 Data:"\010\023\372D\016\n\005name1\022\005pass2" 
-Entry: Term:19 Index:25 Data:"\010\024\202E\016\n\005user1\022\005role1" 
-Entry: Term:20 Index:26 Data:"\010\025\212E\016\n\005user2\022\005role2" 
-Entry: Term:21 Index:27 Data:"\010\026\222E\000" 
-Entry: Term:22 Index:28 Data:"\010\027\232E\000" 
-Entry: Term:23 Index:29 Data:"\010\030\202K\007\n\005role2" 
-Entry: Term:24 Index:30 Data:"\010\031\212K\007\n\005role1" 
-Entry: Term:25 Index:31 Data:"\010\032\222K\007\n\005role3" 
-Entry: Term:26 Index:32 Data:"\010\033\232K\033\n\005role3\022\022\010\001\022\004Keys\032\010RangeEnd" 
-Entry: Term:27 Index:33 Data:"\010\034\242K\026\n\005role3\022\003key\032\010rangeend" 
-Entry: Term:27 Index:34 Data:"?" 
+Snapshot: index:0  term:0
+Entry: Term:1  Index:1  Type:EntryConfChange  Data:"\x08\x01\x10\x00\x18\x02\"\x00"
+Entry: Term:2  Index:2  Type:EntryConfChange  Data:"\x08\x02\x10\x01\x18\x02\"\x00"
+Entry: Term:2  Index:3  Type:EntryConfChange  Data:"\x08\x03\x10\x02\x18\x02\"\x00"
+Entry: Term:2  Index:4  Type:EntryConfChange  Data:"\x08\x04\x10\x03\x18\x03\"\x00"
+Entry: Term:4  Index:5  Type:EntryNormal  Data:"\x08\x05\x1a\x15\n\x011\x12\x02hi\x18\x06 \x01(\x01X\xa0\x9c\x01h\xa0\x9c\x01"
+Entry: Term:5  Index:6  Type:EntryNormal  Data:"\x08\x06\"\x10\n\x04foo1\x12\x04bar1\x18\x010\x01"
+Entry: Term:6  Index:7  Type:EntryNormal  Data:"\x08\x07*\x08\n\x010\x12\x019\x18\x01"
+Entry: Term:7  Index:8  Type:EntryNormal  Data:"\x08\x082\x14\x12\x08\x1a\x06\n\x01a\x12\x01b\x1a\x08\x1a\x06\n\x01a\x12\x01b"
+Entry: Term:8  Index:9  Type:EntryNormal  Data:"\x08\t:\x02\x10\x01"
+Entry: Term:9  Index:10  Type:EntryNormal  Data:"\x08\nB\x04\x08\x01\x10\x01"
+Entry: Term:10  Index:11  Type:EntryNormal  Data:"\x08\x0bJ\x02\x08\x02"
+Entry: Term:11  Index:12  Type:EntryNormal  Data:"\x08\x0cR\x06\x08\x03\x10\x04\x18\x05"
+Entry: Term:12  Index:13  Type:EntryNormal  Data:"\x08\r\xc2>\x00"
+Entry: Term:13  Index:14  Type:EntryNormal  Data:"\x08\x0e\x9a?\x00"
+Entry: Term:14  Index:15  Type:EntryNormal  Data:"\x08\x0f\xa2?\x19\n\x06myname\x12\x08password\x1a\x05token"
+Entry: Term:15  Index:16  Type:EntryNormal  Data:"\x08\x10\xe2D\x10\n\x05name1\x12\x05pass1\x1a\x00"
+Entry: Term:16  Index:17  Type:EntryNormal  Data:"\x08\x11\xeaD\x07\n\x05name1"
+Entry: Term:17  Index:18  Type:EntryNormal  Data:"\x08\x12\xf2D\x07\n\x05name1"
+Entry: Term:18  Index:19  Type:EntryNormal  Data:"\x08\x13\xfaD\x0e\n\x05name1\x12\x05pass2"
+Entry: Term:19  Index:20  Type:EntryNormal  Data:"\x08\x14\x82E\x0e\n\x05user1\x12\x05role1"
+Entry: Term:20  Index:21  Type:EntryNormal  Data:"\x08\x15\x8aE\x0e\n\x05user2\x12\x05role2"
+Entry: Term:21  Index:22  Type:EntryNormal  Data:"\x08\x16\x92E\x00"
+Entry: Term:22  Index:23  Type:EntryNormal  Data:"\x08\x17\x9aE\x00"
+Entry: Term:23  Index:24  Type:EntryNormal  Data:"\x08\x18\x82K\x07\n\x05role2"
+Entry: Term:24  Index:25  Type:EntryNormal  Data:"\x08\x19\x8aK\x07\n\x05role1"
+Entry: Term:25  Index:26  Type:EntryNormal  Data:"\x08\x1a\x92K\x07\n\x05role3"
+Entry: Term:26  Index:27  Type:EntryNormal  Data:"\x08\x1b\x9aK\x1b\n\x05role3\x12\x12\x08\x01\x12\x04Keys\x1a\x08RangeEnd"
+Entry: Term:27  Index:28  Type:EntryNormal  Data:"\x08\x1c\xa2K\x16\n\x05role3\x12\x03key\x1a\x08rangeend"
+Entry: Term:27  Index:29  Type:EntryNormal  Data:"?"
 EOF: All entries were processed.
 `, out.String())
 }
@@ -69,14 +69,12 @@ func assertReadRawOutput(t *testing.T, expected, actual string) {
 	// google.golang.org/protobuf intentionally makes String output unstable across
 	// binaries by varying whitespace, so accept the alternate snapshot line.
 	// See https://github.com/protocolbuffers/protobuf-go/blob/v1.36.11/internal/encoding/text/encode.go#L229-L232.
-	expectedWithExtraSpace := strings.Replace(expected, readRawSnapshotLine, readRawSnapshotLineWithExtraSpace, 1)
-	if actual == expected || actual == expectedWithExtraSpace {
-		return
+	normalize := func(s string) string {
+		for strings.Contains(s, "  ") {
+			s = strings.ReplaceAll(s, "  ", " ")
+		}
+		return s
 	}
-	assert.Equal(t, expected, actual)
-}
 
-const (
-	readRawSnapshotLine               = "Snapshot: index:0 term:0\n"
-	readRawSnapshotLineWithExtraSpace = "Snapshot: index:0  term:0\n"
-)
+	assert.Equal(t, normalize(expected), normalize(actual))
+}
