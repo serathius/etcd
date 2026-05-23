@@ -24,12 +24,12 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
@@ -43,7 +43,7 @@ import (
 
 var confState = raftpb.ConfState{
 	Voters:    []uint64{0x00ffca74},
-	AutoLeave: false,
+	AutoLeave: new(bool(false)),
 }
 
 func TestNew(t *testing.T) {
@@ -279,8 +279,8 @@ func TestVerify(t *testing.T) {
 
 	// make 5 separate files
 	for i := 0; i < 5; i++ {
-		es := []raftpb.Entry{{Index: uint64(i), Data: []byte(fmt.Sprintf("waldata%d", i+1))}}
-		if err = w.Save(raftpb.HardState{}, es); err != nil {
+		es := []*raftpb.Entry{{Index: new(uint64(i)), Data: []byte(fmt.Sprintf("waldata%d", i+1))}}
+		if err = w.Save(&raftpb.HardState{}, es); err != nil {
 			t.Fatal(err)
 		}
 		if err = w.cut(); err != nil {
@@ -288,15 +288,17 @@ func TestVerify(t *testing.T) {
 		}
 	}
 
-	hs := raftpb.HardState{Term: 1, Vote: 3, Commit: 5}
-	require.NoError(t, w.Save(hs, nil))
+	hs := raftpb.HardState{Term: new(uint64(1)), Vote: new(uint64(3)), Commit: new(uint64(5))}
+	require.NoError(t, w.Save(&hs, nil))
 
 	// to verify the WAL is not corrupted at this point
 	hardstate, err := Verify(lg, walDir, &walpb.Snapshot{})
 	if err != nil {
 		t.Errorf("expected a nil error, got %v", err)
 	}
-	assert.Equal(t, hs, *hardstate)
+	if diff := cmp.Diff(&hs, hardstate, protocmp.Transform()); diff != "" {
+		t.Errorf("unexpected hardstate (-want +got):\n%s", diff)
+	}
 
 	walFiles, err := os.ReadDir(walDir)
 	if err != nil {
@@ -326,7 +328,7 @@ func TestCut(t *testing.T) {
 	}
 	defer w.Close()
 
-	state := raftpb.HardState{Term: 1}
+	state := &raftpb.HardState{Term: new(uint64(1))}
 	if err = w.Save(state, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -338,8 +340,8 @@ func TestCut(t *testing.T) {
 		t.Errorf("name = %s, want %s", g, wname)
 	}
 
-	es := []raftpb.Entry{{Index: 1, Term: 1, Data: []byte{1}}}
-	if err = w.Save(raftpb.HardState{}, es); err != nil {
+	es := []*raftpb.Entry{{Index: new(uint64(1)), Term: new(uint64(1)), Data: []byte{1}}}
+	if err = w.Save(&raftpb.HardState{}, es); err != nil {
 		t.Fatal(err)
 	}
 	if err = w.cut(); err != nil {
@@ -370,8 +372,8 @@ func TestCut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(gst, state) {
-		t.Errorf("state = %+v, want %+v", gst, state)
+	if diff := cmp.Diff(state, gst, protocmp.Transform()); diff != "" {
+		t.Errorf("unexpected state (-want +got):\n%s", diff)
 	}
 }
 
@@ -383,7 +385,7 @@ func TestSaveWithCut(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	state := raftpb.HardState{Term: 1}
+	state := &raftpb.HardState{Term: new(uint64(1))}
 	if err = w.Save(state, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -397,7 +399,7 @@ func TestSaveWithCut(t *testing.T) {
 	defer func() { SegmentSizeBytes = restoreLater }()
 	index := uint64(0)
 	for totalSize := 0; totalSize < int(SegmentSizeBytes); totalSize += EntrySize {
-		ents := []raftpb.Entry{{Index: index, Term: 1, Data: bigData}}
+		ents := []*raftpb.Entry{{Index: new(index), Term: new(uint64(1)), Data: bigData}}
 		if err = w.Save(state, ents); err != nil {
 			t.Fatal(err)
 		}
@@ -419,8 +421,8 @@ func TestSaveWithCut(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !reflect.DeepEqual(newhardstate, state) {
-		t.Errorf("Hard State = %+v, want %+v", newhardstate, state)
+	if diff := cmp.Diff(state, newhardstate, protocmp.Transform()); diff != "" {
+		t.Errorf("unexpected Hard State (-want +got):\n%s", diff)
 	}
 	if len(entries) != int(SegmentSizeBytes/int64(EntrySize)) {
 		t.Errorf("Number of entries = %d, expected = %d", len(entries), int(SegmentSizeBytes/int64(EntrySize)))
@@ -470,11 +472,17 @@ func TestRecover(t *testing.T) {
 				t.Errorf("Unexpected error: %v", err)
 			}
 
-			ents := []raftpb.Entry{{Index: 1, Term: 1, Data: data}, {Index: 2, Term: 2, Data: data}}
-			if err = w.Save(raftpb.HardState{}, ents); err != nil {
+			ents := []*raftpb.Entry{
+				{Index: new(uint64(1)), Term: new(uint64(1)), Data: data},
+				{Index: new(uint64(2)), Term: new(uint64(2)), Data: data},
+			}
+			if err = w.Save(&raftpb.HardState{}, ents); err != nil {
 				t.Fatal(err)
 			}
-			sts := []raftpb.HardState{{Term: 1, Vote: 1, Commit: 1}, {Term: 2, Vote: 2, Commit: 2}}
+			sts := []*raftpb.HardState{
+				{Term: new(uint64(1)), Vote: new(uint64(1)), Commit: new(uint64(1))},
+				{Term: new(uint64(2)), Vote: new(uint64(2)), Commit: new(uint64(2))},
+			}
 			for _, s := range sts {
 				if err = w.Save(s, nil); err != nil {
 					t.Fatal(err)
@@ -493,13 +501,23 @@ func TestRecover(t *testing.T) {
 			if !bytes.Equal(metadata, []byte("metadata")) {
 				t.Errorf("metadata = %s, want %s", metadata, "metadata")
 			}
-			if !reflect.DeepEqual(entries, ents) {
-				t.Errorf("ents = %+v, want %+v", entries, ents)
+			if len(ents) != len(entries) {
+				t.Fatalf("len(ents) = %d, len(entries) = %d", len(ents), len(entries))
+			}
+			for i := range ents {
+				if !bytes.Equal(ents[i].Data, entries[i].Data) {
+					t.Errorf("entry %d: Data does not match", i)
+				}
+				ents[i].Data = nil
+				entries[i].Data = nil
+			}
+			if diff := cmp.Diff(ents, entries, protocmp.Transform(), cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("unexpected entries (-want +got):\n%s", diff)
 			}
 			// only the latest state is recorded
 			s := sts[len(sts)-1]
-			if !reflect.DeepEqual(state, s) {
-				t.Errorf("state = %+v, want %+v", state, s)
+			if diff := cmp.Diff(s, state, protocmp.Transform()); diff != "" {
+				t.Errorf("unexpected state (-want +got):\n%s", diff)
 			}
 			w.Close()
 		})
@@ -584,8 +602,8 @@ func TestRecoverAfterCut(t *testing.T) {
 		if err = md.SaveSnapshot(&walpb.Snapshot{Index: new(uint64(i)), Term: new(uint64(1)), ConfState: &confState}); err != nil {
 			t.Fatal(err)
 		}
-		es := []raftpb.Entry{{Index: uint64(i)}}
-		if err = md.Save(raftpb.HardState{}, es); err != nil {
+		es := []*raftpb.Entry{{Index: new(uint64(i))}}
+		if err = md.Save(&raftpb.HardState{}, es); err != nil {
 			t.Fatal(err)
 		}
 		if err = md.cut(); err != nil {
@@ -619,8 +637,8 @@ func TestRecoverAfterCut(t *testing.T) {
 			t.Errorf("#%d: metadata = %s, want %s", i, metadata, "metadata")
 		}
 		for j, e := range entries {
-			if e.Index != uint64(j+i+1) {
-				t.Errorf("#%d: ents[%d].Index = %+v, want %+v", i, j, e.Index, j+i+1)
+			if e.GetIndex() != uint64(j+i+1) {
+				t.Errorf("#%d: ents[%d].Index = %+v, want %+v", i, j, e.GetIndex(), j+i+1)
 			}
 		}
 		w.Close()
@@ -637,7 +655,7 @@ func TestOpenAtUncommittedIndex(t *testing.T) {
 	if err = w.SaveSnapshot(&walpb.Snapshot{Index: new(uint64(0)), Term: new(uint64(0))}); err != nil {
 		t.Fatal(err)
 	}
-	if err = w.Save(raftpb.HardState{}, []raftpb.Entry{{Index: 0}}); err != nil {
+	if err = w.Save(&raftpb.HardState{}, []*raftpb.Entry{{Index: new(uint64(0))}}); err != nil {
 		t.Fatal(err)
 	}
 	w.Close()
@@ -667,8 +685,8 @@ func TestOpenForRead(t *testing.T) {
 	defer w.Close()
 	// make 10 separate files
 	for i := 0; i < 10; i++ {
-		es := []raftpb.Entry{{Index: uint64(i)}}
-		if err = w.Save(raftpb.HardState{}, es); err != nil {
+		es := []*raftpb.Entry{{Index: new(uint64(i))}}
+		if err = w.Save(&raftpb.HardState{}, es); err != nil {
 			t.Fatal(err)
 		}
 		if err = w.cut(); err != nil {
@@ -687,7 +705,7 @@ func TestOpenForRead(t *testing.T) {
 	defer w2.Close()
 	_, _, ents, err := w2.ReadAll()
 	require.NoErrorf(t, err, "err = %v, want nil", err)
-	if g := ents[len(ents)-1].Index; g != 9 {
+	if g := ents[len(ents)-1].GetIndex(); g != 9 {
 		t.Errorf("last index read = %d, want %d", g, 9)
 	}
 }
@@ -705,8 +723,8 @@ func TestOpenWithMaxIndex(t *testing.T) {
 		}
 	}()
 
-	es := []raftpb.Entry{{Index: uint64(math.MaxInt64)}}
-	if err = w1.Save(raftpb.HardState{}, es); err != nil {
+	es := []*raftpb.Entry{{Index: new(uint64(math.MaxInt64))}}
+	if err = w1.Save(&raftpb.HardState{}, es); err != nil {
 		t.Fatal(err)
 	}
 	w1.Close()
@@ -757,8 +775,8 @@ func TestReleaseLockTo(t *testing.T) {
 
 	// make 10 separate files
 	for i := 0; i < 10; i++ {
-		es := []raftpb.Entry{{Index: uint64(i)}}
-		if err = w.Save(raftpb.HardState{}, es); err != nil {
+		es := []*raftpb.Entry{{Index: new(uint64(i))}}
+		if err = w.Save(&raftpb.HardState{}, es); err != nil {
 			t.Fatal(err)
 		}
 		if err = w.cut(); err != nil {
@@ -814,8 +832,9 @@ func TestTailWriteNoSlackSpace(t *testing.T) {
 	}
 	// write some entries
 	for i := 1; i <= 5; i++ {
-		es := []raftpb.Entry{{Index: uint64(i), Term: 1, Data: []byte{byte(i)}}}
-		if err = w.Save(raftpb.HardState{Term: 1}, es); err != nil {
+		term := uint64(1)
+		es := []*raftpb.Entry{{Index: new(uint64(i)), Term: &term, Data: []byte{byte(i)}}}
+		if err = w.Save(&raftpb.HardState{Term: &term}, es); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -841,8 +860,9 @@ func TestTailWriteNoSlackSpace(t *testing.T) {
 	require.Lenf(t, ents, 5, "got entries %+v, expected 5 entries", ents)
 	// write more entries
 	for i := 6; i <= 10; i++ {
-		es := []raftpb.Entry{{Index: uint64(i), Term: 1, Data: []byte{byte(i)}}}
-		if err = w.Save(raftpb.HardState{Term: 1}, es); err != nil {
+		term := uint64(1)
+		es := []*raftpb.Entry{{Index: new(uint64(i)), Term: &term, Data: []byte{byte(i)}}}
+		if err = w.Save(&raftpb.HardState{Term: &term}, es); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -916,8 +936,8 @@ func TestOpenOnTornWrite(t *testing.T) {
 	// get offset of end of each saved entry
 	offsets := make([]int64, maxEntries)
 	for i := range offsets {
-		es := []raftpb.Entry{{Index: uint64(i)}}
-		if err = w.Save(raftpb.HardState{}, es); err != nil {
+		es := []*raftpb.Entry{{Index: new(uint64(i))}}
+		if err = w.Save(&raftpb.HardState{}, es); err != nil {
 			t.Fatal(err)
 		}
 		if offsets[i], err = w.tail().Seek(0, io.SeekCurrent); err != nil {
@@ -958,8 +978,8 @@ func TestOpenOnTornWrite(t *testing.T) {
 	// write a few entries past the clobbered entry
 	for i := 0; i < overwriteEntries; i++ {
 		// Index is different from old, truncated entries
-		es := []raftpb.Entry{{Index: uint64(i + clobberIdx), Data: []byte("new")}}
-		if err = w.Save(raftpb.HardState{}, es); err != nil {
+		es := []*raftpb.Entry{{Index: new(uint64(i + clobberIdx)), Data: []byte("new")}}
+		if err = w.Save(&raftpb.HardState{}, es); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1025,10 +1045,10 @@ func TestValidSnapshotEntries(t *testing.T) {
 	p := t.TempDir()
 	snap0 := walpb.Snapshot{Index: new(uint64(0)), Term: new(uint64(0))}
 	snap1 := walpb.Snapshot{Index: new(uint64(1)), Term: new(uint64(1)), ConfState: &confState}
-	state1 := raftpb.HardState{Commit: 1, Term: 1}
+	state1 := raftpb.HardState{Commit: new(uint64(1)), Term: new(uint64(1))}
 	snap2 := walpb.Snapshot{Index: new(uint64(2)), Term: new(uint64(1)), ConfState: &confState}
 	snap3 := walpb.Snapshot{Index: new(uint64(3)), Term: new(uint64(2)), ConfState: &confState}
-	state2 := raftpb.HardState{Commit: 3, Term: 2}
+	state2 := raftpb.HardState{Commit: new(uint64(3)), Term: new(uint64(2))}
 	snap4 := walpb.Snapshot{Index: new(uint64(4)), Term: new(uint64(2)), ConfState: &confState} // will be orphaned since the last committed entry will be snap3
 	func() {
 		w, err := Create(zaptest.NewLogger(t), p, nil)
@@ -1041,7 +1061,7 @@ func TestValidSnapshotEntries(t *testing.T) {
 		if err = w.SaveSnapshot(&snap1); err != nil {
 			t.Fatal(err)
 		}
-		if err = w.Save(state1, nil); err != nil {
+		if err = w.Save(&state1, nil); err != nil {
 			t.Fatal(err)
 		}
 		if err = w.SaveSnapshot(&snap2); err != nil {
@@ -1050,7 +1070,7 @@ func TestValidSnapshotEntries(t *testing.T) {
 		if err = w.SaveSnapshot(&snap3); err != nil {
 			t.Fatal(err)
 		}
-		if err = w.Save(state2, nil); err != nil {
+		if err = w.Save(&state2, nil); err != nil {
 			t.Fatal(err)
 		}
 		if err = w.SaveSnapshot(&snap4); err != nil {
@@ -1078,10 +1098,10 @@ func TestValidSnapshotEntriesAfterPurgeWal(t *testing.T) {
 	p := t.TempDir()
 	snap0 := walpb.Snapshot{}
 	snap1 := walpb.Snapshot{Index: new(uint64(1)), Term: new(uint64(1)), ConfState: &confState}
-	state1 := raftpb.HardState{Commit: 1, Term: 1}
+	state1 := raftpb.HardState{Commit: new(uint64(1)), Term: new(uint64(1))}
 	snap2 := walpb.Snapshot{Index: new(uint64(2)), Term: new(uint64(1)), ConfState: &confState}
 	snap3 := walpb.Snapshot{Index: new(uint64(3)), Term: new(uint64(2)), ConfState: &confState}
-	state2 := raftpb.HardState{Commit: 3, Term: 2}
+	state2 := raftpb.HardState{Commit: new(uint64(3)), Term: new(uint64(2))}
 	func() {
 		w, err := Create(zaptest.NewLogger(t), p, nil)
 		if err != nil {
@@ -1093,7 +1113,7 @@ func TestValidSnapshotEntriesAfterPurgeWal(t *testing.T) {
 		if err = w.SaveSnapshot(&snap1); err != nil {
 			t.Fatal(err)
 		}
-		if err = w.Save(state1, nil); err != nil {
+		if err = w.Save(&state1, nil); err != nil {
 			t.Fatal(err)
 		}
 		if err = w.SaveSnapshot(&snap2); err != nil {
@@ -1103,7 +1123,7 @@ func TestValidSnapshotEntriesAfterPurgeWal(t *testing.T) {
 			t.Fatal(err)
 		}
 		for i := 0; i < 128; i++ {
-			if err = w.Save(state2, nil); err != nil {
+			if err = w.Save(&state2, nil); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -1125,8 +1145,8 @@ func TestLastRecordLengthExceedFileEnd(t *testing.T) {
 	 * sure it exceeds the end of the file.
 	 *
 	 *  for i := 0; i < 3; i++ {
-	 *		   es := []raftpb.Entry{{Index: uint64(i + 1), Data: []byte(fmt.Sprintf("waldata%d", i+1))}}
-	 *			if err = w.Save(raftpb.HardState{}, es); err != nil {
+	 *		   es := []*raftpb.Entry{{Index: uint64(i + 1), Data: []byte(fmt.Sprintf("waldata%d", i+1))}}
+	 *			if err = w.Save(&raftpb.HardState{}, es); err != nil {
 	 *					t.Fatal(err)
 	 *			}
 	 *	}
@@ -1169,8 +1189,8 @@ func TestLastRecordLengthExceedFileEnd(t *testing.T) {
 		if rec.GetType() == EntryType {
 			e := MustUnmarshalEntry(rec.Data)
 			t.Logf("Validating normal entry: %v", e)
-			recData := fmt.Sprintf("waldata%d", e.Index)
-			require.Equal(t, raftpb.EntryNormal, e.Type)
+			recData := fmt.Sprintf("waldata%d", e.GetIndex())
+			require.Equal(t, raftpb.EntryNormal, e.GetType())
 			require.Equal(t, recData, string(e.Data))
 		}
 		rec = &walpb.Record{}
