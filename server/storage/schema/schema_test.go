@@ -57,14 +57,14 @@ func TestValidate(t *testing.T) {
 			name:    `V3.5 schema without term field is correct`,
 			version: version.V3_5,
 			overrideKeys: func(tx backend.UnsafeReadWriter) {
-				MustUnsafeSaveConfStateToBackend(zap.NewNop(), tx, &raftpb.ConfState{})
+				MustUnsafeSaveConfStateToBackend(zap.NewNop(), tx, &raftpb.ConfState{AutoLeave: new(false)})
 			},
 		},
 		{
 			name:    `V3.5 schema with all fields is correct`,
 			version: version.V3_5,
 			overrideKeys: func(tx backend.UnsafeReadWriter) {
-				MustUnsafeSaveConfStateToBackend(zap.NewNop(), tx, &raftpb.ConfState{})
+				MustUnsafeSaveConfStateToBackend(zap.NewNop(), tx, &raftpb.ConfState{AutoLeave: new(false)})
 				UnsafeUpdateConsistentIndex(tx, 1, 1)
 			},
 		},
@@ -120,7 +120,7 @@ func TestMigrate(t *testing.T) {
 			name:    `Upgrading v3.5 to v3.6 should be rejected if term is not set`,
 			version: version.V3_5,
 			overrideKeys: func(tx backend.UnsafeReadWriter) {
-				MustUnsafeSaveConfStateToBackend(zap.NewNop(), tx, &raftpb.ConfState{})
+				MustUnsafeSaveConfStateToBackend(zap.NewNop(), tx, &raftpb.ConfState{AutoLeave: new(false)})
 			},
 			targetVersion:  version.V3_6,
 			expectVersion:  nil,
@@ -315,19 +315,19 @@ func setupBackendData(t *testing.T, ver semver.Version, overrideKeys func(tx bac
 		switch ver {
 		case version.V3_4:
 		case version.V3_5:
-			MustUnsafeSaveConfStateToBackend(zap.NewNop(), tx, &raftpb.ConfState{})
+			MustUnsafeSaveConfStateToBackend(zap.NewNop(), tx, &raftpb.ConfState{AutoLeave: new(false)})
 			UnsafeUpdateConsistentIndex(tx, 1, 1)
 		case version.V3_6:
-			MustUnsafeSaveConfStateToBackend(zap.NewNop(), tx, &raftpb.ConfState{})
+			MustUnsafeSaveConfStateToBackend(zap.NewNop(), tx, &raftpb.ConfState{AutoLeave: new(false)})
 			UnsafeUpdateConsistentIndex(tx, 1, 1)
 			UnsafeSetStorageVersion(tx, &version.V3_6)
 		case version.V3_7:
-			MustUnsafeSaveConfStateToBackend(zap.NewNop(), tx, &raftpb.ConfState{})
+			MustUnsafeSaveConfStateToBackend(zap.NewNop(), tx, &raftpb.ConfState{AutoLeave: new(false)})
 			UnsafeUpdateConsistentIndex(tx, 1, 1)
 			UnsafeSetStorageVersion(tx, &version.V3_7)
 			tx.UnsafePut(Meta, []byte("future-key"), []byte(""))
 		case version.V3_8:
-			MustUnsafeSaveConfStateToBackend(zap.NewNop(), tx, &raftpb.ConfState{})
+			MustUnsafeSaveConfStateToBackend(zap.NewNop(), tx, &raftpb.ConfState{AutoLeave: new(false)})
 			UnsafeUpdateConsistentIndex(tx, 1, 1)
 			UnsafeSetStorageVersion(tx, &version.V3_8)
 			tx.UnsafePut(Meta, []byte("future-key"), []byte(""))
