@@ -37,9 +37,12 @@ type Result struct {
 type ResultStatus string
 
 var (
-	Unknown ResultStatus
+	Unknown ResultStatus = ""
 	Success ResultStatus = "Success"
 	Failure ResultStatus = "Failure"
+	Timeout ResultStatus = "Timeout"
+	// DeadlineExceeded is a workaround pourcupine to force deadline, but it doesn't support visualization.
+	DeadlineExceeded ResultStatus = "DeadlineExceeded"
 )
 
 func (r RobustnessResult) Error() error {
@@ -71,23 +74,31 @@ func ResultFromError(err error) Result {
 }
 
 func (r Result) Error() error {
-	if r.Status == Failure {
-		if r.Message != "" {
-			return errors.New(r.Message)
-		}
-		return errors.New("failure")
+	switch r.Status {
+	case Success, Unknown:
+		return nil
+	default:
+		return errors.New(r.String())
 	}
-	return nil
+}
+
+func (r Result) String() string {
+	if r.Message != "" {
+		return fmt.Sprintf("%s: %s", r.Status, r.Message)
+	}
+	return string(r.Status)
 }
 
 type LinearizationResult struct {
 	Info  porcupine.LinearizationInfo
 	Model porcupine.Model
 	Result
-	Timeout bool
 }
 
 func (r *LinearizationResult) Visualize(lg *zap.Logger, path string) error {
+	if r.Status == DeadlineExceeded {
+		return r.Error()
+	}
 	lg.Info("Saving visualization", zap.String("path", path))
 	err := porcupine.VisualizePath(r.Model, r.Info, path)
 	if err != nil {

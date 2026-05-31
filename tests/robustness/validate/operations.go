@@ -16,6 +16,7 @@ package validate
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/anishathalye/porcupine"
@@ -38,7 +39,8 @@ func validateLinearizableOperationsAndVisualize(lg *zap.Logger, keys []string, o
 
 	var timer *time.Timer
 	if timeout > 0 {
-		timer = time.AfterFunc(timeout, func() {
+		// Purcupine timeout is not always enforced. If it doesn't we give some time before existing from model outselves.
+		timer = time.AfterFunc(timeout*11/10, func() {
 			model.LinearizationDeadlineTripped.Store(1)
 		})
 	}
@@ -55,10 +57,9 @@ func validateLinearizableOperationsAndVisualize(lg *zap.Logger, keys []string, o
 	}
 
 	if model.LinearizationDeadlineTripped.Load() != 0 {
-		result.Status = Failure
-		result.Message = "timed out"
-		result.Timeout = true
-		lg.Error("Linearization timed out", zap.Duration("duration", time.Since(start)))
+		result.Status = DeadlineExceeded
+		result.Message = "deadline exceeded"
+		lg.Error("Linearization deadline exceeded", zap.Duration("duration", time.Since(start)))
 		return result
 	}
 
@@ -67,9 +68,7 @@ func validateLinearizableOperationsAndVisualize(lg *zap.Logger, keys []string, o
 		result.Status = Success
 		lg.Info("Linearization success", zap.Duration("duration", time.Since(start)))
 	case porcupine.Unknown:
-		result.Status = Failure
-		result.Message = "timed out"
-		result.Timeout = true
+		result.Status = Timeout
 		lg.Error("Linearization timed out", zap.Duration("duration", time.Since(start)))
 	case porcupine.Illegal:
 		result.Status = Failure
@@ -77,7 +76,7 @@ func validateLinearizableOperationsAndVisualize(lg *zap.Logger, keys []string, o
 		lg.Error("Linearization illegal", zap.Duration("duration", time.Since(start)))
 	default:
 		result.Status = Failure
-		result.Message = "unknown"
+		result.Message = fmt.Sprintf("unknown results from porcupine: %s", check)
 	}
 	return result
 }

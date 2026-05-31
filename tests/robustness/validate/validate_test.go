@@ -169,7 +169,7 @@ func TestValidateAndReturnVisualize(t *testing.T) {
 				},
 			},
 			persistedRequests: []model.EtcdRequest{putRequest("key", "value")},
-			expectError:       "watch: broke Reliable",
+			expectError:       "watch: Failure: broke Reliable",
 		},
 	}
 	for _, tc := range tcs {
