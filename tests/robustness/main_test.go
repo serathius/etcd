@@ -60,6 +60,10 @@ func TestRobustnessExploratory(t *testing.T) {
 			lg := zaptest.NewLogger(t)
 			s.Cluster.Logger = lg
 			ctx := t.Context()
+			if s.Cluster.EnvVars == nil {
+				s.Cluster.EnvVars = make(map[string]string)
+			}
+			s.Cluster.EnvVars["ETCD_RELEASE_DELAY_AFTER_SNAPSHOT"] = "0s"
 			c, err := e2e.NewEtcdProcessCluster(ctx, t, e2e.WithConfig(&s.Cluster))
 			require.NoError(t, err)
 			defer forcestopCluster(c)
@@ -79,6 +83,10 @@ func TestRobustnessRegression(t *testing.T) {
 			lg := zaptest.NewLogger(t)
 			s.Cluster.Logger = lg
 			ctx := t.Context()
+			if s.Cluster.EnvVars == nil {
+				s.Cluster.EnvVars = make(map[string]string)
+			}
+			s.Cluster.EnvVars["ETCD_RELEASE_DELAY_AFTER_SNAPSHOT"] = "0s"
 			c, err := e2e.NewEtcdProcessCluster(ctx, t, e2e.WithConfig(&s.Cluster))
 			require.NoError(t, err)
 			defer forcestopCluster(c)

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -97,8 +98,6 @@ const (
 	// This number is more than enough for most clusters with 5 machines.
 	maxInFlightMsgSnap = 16
 
-	releaseDelayAfterSnapshot = 30 * time.Second
-
 	// maxPendingRevokes is the maximum number of outstanding expired lease revocations.
 	maxPendingRevokes = 16
 
@@ -119,6 +118,8 @@ var (
 	monitorVersionInterval = rafthttp.ConnWriteTimeout - time.Second
 
 	recommendedMaxRequestBytesString = humanize.Bytes(uint64(recommendedMaxRequestBytes))
+
+	ReleaseDelayAfterSnapshot = 30 * time.Second
 )
 
 func init() {
@@ -131,6 +132,11 @@ func init() {
 			},
 		),
 	)
+	if env := os.Getenv("ETCD_RELEASE_DELAY_AFTER_SNAPSHOT"); env != "" {
+		if d, err := time.ParseDuration(env); err == nil {
+			ReleaseDelayAfterSnapshot = d
+		}
+	}
 }
 
 type Response struct {
@@ -1870,7 +1876,7 @@ func (s *EtcdServer) sendMergedSnap(merged *snap.Message) {
 			// to catch up. We cannot avoid the snapshot cycle anyway.
 			if ok {
 				select {
-				case <-time.After(releaseDelayAfterSnapshot):
+				case <-time.After(ReleaseDelayAfterSnapshot):
 				case <-s.stopping:
 				}
 			}

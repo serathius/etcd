@@ -343,5 +343,21 @@ func Regression(t *testing.T) []TestScenario {
 			Cluster: *e2e.NewConfig(opts...),
 		})
 	}
+	scenarios = append(scenarios, TestScenario{
+		Name:      "IssueCompactionBlock",
+		Failpoint: failpoint.RaftAfterApplySnapPanic,
+		Profile: traffic.Profile{
+			KeyValue: &traffic.KeyValueMedium,
+		},
+		Traffic: traffic.Kubernetes,
+		Cluster: *e2e.NewConfig(
+			e2e.WithClusterSize(3),
+			e2e.WithPeerProxy(true),
+			e2e.WithIsPeerTLS(true),
+			options.WithSnapshotCount(50),
+			options.WithSnapshotCatchUpEntries(100),
+			e2e.WithGoFailEnabled(true),
+		),
+	})
 	return scenarios
 }
