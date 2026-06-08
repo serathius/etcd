@@ -16,7 +16,6 @@ package integration_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -113,7 +112,7 @@ func putWorker(ctx context.Context, t *testing.T, clus *integration.Cluster) {
 	for i := 0; ; i++ {
 		kv := clus.Client(i % 3)
 		_, err := kv.Put(ctx, "foo", fmt.Sprintf("%d", i))
-		if errors.Is(err, context.DeadlineExceeded) {
+		if ctx.Err() != nil {
 			return
 		}
 		assert.NoError(t, silenceConnectionErrors(err))
@@ -125,7 +124,7 @@ func getWorker(ctx context.Context, t *testing.T, clus *integration.Cluster) {
 	for i := 0; ; i++ {
 		kv := clus.Client(i % 3)
 		resp, err := kv.Get(ctx, "foo")
-		if errors.Is(err, context.DeadlineExceeded) {
+		if ctx.Err() != nil {
 			return
 		}
 		require.NoError(t, silenceConnectionErrors(err))
