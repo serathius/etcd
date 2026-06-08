@@ -976,11 +976,15 @@ func (epc *EtcdProcessCluster) start(f func(ep EtcdProcess) error) error {
 	for i := range epc.Procs {
 		go func(n int) { readyC <- f(epc.Procs[n]) }(i)
 	}
+	var err error
 	for range epc.Procs {
-		if err := <-readyC; err != nil {
-			epc.Close()
-			return err
+		if curErr := <-readyC; curErr != nil && err == nil {
+			err = curErr
 		}
+	}
+	if err != nil {
+		epc.Close()
+		return err
 	}
 	return nil
 }
@@ -992,11 +996,15 @@ func (epc *EtcdProcessCluster) rollingStart(f func(ep EtcdProcess) error) error 
 		// make sure the servers do not start at the same time
 		time.Sleep(time.Second)
 	}
+	var err error
 	for range epc.Procs {
-		if err := <-readyC; err != nil {
-			epc.Close()
-			return err
+		if curErr := <-readyC; curErr != nil && err == nil {
+			err = curErr
 		}
+	}
+	if err != nil {
+		epc.Close()
+		return err
 	}
 	return nil
 }
