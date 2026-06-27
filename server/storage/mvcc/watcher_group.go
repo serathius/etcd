@@ -15,6 +15,7 @@
 package mvcc
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 
@@ -74,8 +75,6 @@ func (wb watcherBatch) add(w *watcher, ev *mvccpb.Event) {
 	eb.add(ev)
 }
 
-// newWatcherBatch maps watchers to their matched events. It enables quick
-// events look up by watcher.
 func newWatcherBatch(wg *watcherGroup, evs []*mvccpb.Event) watcherBatch {
 	if len(wg.watchers) == 0 {
 		return nil
@@ -83,19 +82,43 @@ func newWatcherBatch(wg *watcherGroup, evs []*mvccpb.Event) watcherBatch {
 
 	wb := make(watcherBatch)
 	for _, ev := range evs {
-		for w := range wg.watcherSetByKey(string(ev.Kv.Key)) {
+		first := true
+		for w := range wg.keyWatchers[string(ev.Kv.Key)] {
 			if ev.Kv.ModRevision >= w.minRev {
-				// don't double notify
-				wb.add(w, &mvccpb.Event{
-					Type:   ev.Type,
-					Kv:     ev.Kv,
-					PrevKv: ev.PrevKv,
-				})
+				if first {
+					wb.add(w, ev)
+					first = false
+				} else {
+					wb.add(w, cloneEvent(ev))
+				}
+			}
+		}
+		if len(wg.rangesSlice) > 0 {
+			for _, w := range wg.rangesSlice {
+				if bytes.Compare(ev.Kv.Key, w.key) >= 0 && (len(w.end) == 0 || bytes.Compare(ev.Kv.Key, w.end) < 0) {
+					if ev.Kv.ModRevision >= w.minRev {
+						if first {
+							wb.add(w, ev)
+							first = false
+						} else {
+							wb.add(w, cloneEvent(ev))
+						}
+					}
+				}
 			}
 		}
 	}
 	return wb
 }
+
+func cloneEvent(ev *mvccpb.Event) *mvccpb.Event {
+	return &mvccpb.Event{
+		Type:   ev.Type,
+		Kv:     ev.Kv,
+		PrevKv: ev.PrevKv,
+	}
+}
+
 
 type watcherSet map[*watcher]struct{}
 
@@ -151,6 +174,8 @@ type watcherGroup struct {
 	keyWatchers watcherSetByKey
 	// ranges has the watchers that watch a range; it is sorted by interval
 	ranges adt.IntervalTree
+	// rangesSlice contains the same range watchers for fast linear iteration
+	rangesSlice []*watcher
 	// watchers is the set of all watchers
 	watchers watcherSet
 }
@@ -170,6 +195,8 @@ func (wg *watcherGroup) add(wa *watcher) {
 		wg.keyWatchers.add(wa)
 		return
 	}
+
+	wg.rangesSlice = append(wg.rangesSlice, wa)
 
 	// interval already registered?
 	ivl := adt.NewStringAffineInterval(string(wa.key), string(wa.end))
@@ -202,6 +229,13 @@ func (wg *watcherGroup) delete(wa *watcher) bool {
 	if wa.end == nil {
 		wg.keyWatchers.delete(wa)
 		return true
+	}
+
+	for i, w := range wg.rangesSlice {
+		if w == wa {
+			wg.rangesSlice = append(wg.rangesSlice[:i], wg.rangesSlice[i+1:]...)
+			break
+		}
 	}
 
 	ivl := adt.NewStringAffineInterval(string(wa.key), string(wa.end))
