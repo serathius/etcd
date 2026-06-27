@@ -474,3 +474,70 @@ func shuffleList(l []string, seed int) {
 		l[i], l[j] = l[j], l[i]
 	}
 }
+
+func BenchmarkTransactionalDeletes(b *testing.B) {
+	b.Cleanup(func() {})
+	be, _ := betesting.NewTmpBackend(b, time.Hour, 10000)
+	defer betesting.Close(b, be)
+
+	tx := be.BatchTx()
+	tx.Lock()
+	tx.UnsafeCreateBucket(schema.Key)
+	for i := 0; i < 1000; i++ {
+		k := []byte(fmt.Sprintf("key-%04d", i))
+		v := []byte(fmt.Sprintf("value-%04d", i))
+		tx.UnsafePut(schema.Key, k, v)
+	}
+	tx.Unlock()
+	be.ForceCommit()
+
+	tx.Lock()
+	for i := 0; i < 1000; i += 2 {
+		k := []byte(fmt.Sprintf("key-%04d", i))
+		tx.UnsafeDelete(schema.Key, k)
+	}
+	for i := 1; i < 1000; i += 4 {
+		k := []byte(fmt.Sprintf("key-%04d", i))
+		v := []byte(fmt.Sprintf("value-new-%04d", i))
+		tx.UnsafePut(schema.Key, k, v)
+	}
+	tx.Unlock()
+
+	rtx := be.ReadTx()
+
+	b.Run("UnsafeRange-SingleKey", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			k := []byte(fmt.Sprintf("key-%04d", i%1200))
+			rtx.RLock()
+			rtx.UnsafeRange(schema.Key, k, nil, 1)
+			rtx.RUnlock()
+		}
+	})
+
+	b.Run("UnsafeRange-Range", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			start := i % 950
+			kStart := []byte(fmt.Sprintf("key-%04d", start))
+			kEnd := []byte(fmt.Sprintf("key-%04d", start+50))
+			rtx.RLock()
+			rtx.UnsafeRange(schema.Key, kStart, kEnd, 100)
+			rtx.RUnlock()
+		}
+	})
+
+	b.Run("UnsafeForEach", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			rtx.RLock()
+			rtx.UnsafeForEach(schema.Key, func(k, v []byte) error {
+				return nil
+			})
+			rtx.RUnlock()
+		}
+	})
+}

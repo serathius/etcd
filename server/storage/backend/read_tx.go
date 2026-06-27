@@ -15,6 +15,7 @@
 package backend
 
 import (
+	"bytes"
 	"math"
 	"sync"
 
@@ -55,30 +56,70 @@ func (baseReadTx *baseReadTx) UnsafeForEach(bucket Bucket, visitor func(k, v []b
 	if baseReadTx.buf.bucketDeleted(bucket) {
 		return nil
 	}
-	dups := make(map[string]struct{})
-	getDups := func(k, v []byte) error {
-		dups[string(k)] = struct{}{}
+
+	baseReadTx.txMu.Lock()
+	dbBucket := baseReadTx.tx.Bucket(bucket.Name())
+	var c *bolt.Cursor
+	if dbBucket != nil {
+		c = dbBucket.Cursor()
+	}
+	baseReadTx.txMu.Unlock()
+
+	bb := baseReadTx.buf.buckets[bucket.ID()]
+
+	if bb == nil || bb.used == 0 {
+		if c == nil {
+			return nil
+		}
+		baseReadTx.txMu.Lock()
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			baseReadTx.txMu.Unlock()
+			if err := visitor(k, v); err != nil {
+				return err
+			}
+			baseReadTx.txMu.Lock()
+		}
+		baseReadTx.txMu.Unlock()
 		return nil
 	}
-	visitNoDup := func(k, v []byte) error {
-		if _, ok := dups[string(k)]; ok {
-			return nil
+
+	var kdb, vdb []byte
+	if c != nil {
+		baseReadTx.txMu.Lock()
+		kdb, vdb = c.First()
+		baseReadTx.txMu.Unlock()
+	}
+
+	j := 0
+	for kdb != nil || j < bb.used {
+		if kdb != nil && (j >= bb.used || bytes.Compare(kdb, bb.buf[j].key) < 0) {
+			if err := visitor(kdb, vdb); err != nil {
+				return err
+			}
+			baseReadTx.txMu.Lock()
+			kdb, vdb = c.Next()
+			baseReadTx.txMu.Unlock()
+		} else if j < bb.used && (kdb == nil || bytes.Compare(bb.buf[j].key, kdb) < 0) {
+			if bb.buf[j].val != nil {
+				if err := visitor(bb.buf[j].key, bb.buf[j].val); err != nil {
+					return err
+				}
+			}
+			j++
+		} else {
+			if bb.buf[j].val != nil {
+				if err := visitor(bb.buf[j].key, bb.buf[j].val); err != nil {
+					return err
+				}
+			}
+			j++
+			baseReadTx.txMu.Lock()
+			kdb, vdb = c.Next()
+			baseReadTx.txMu.Unlock()
 		}
-		if baseReadTx.buf.tombstoned(bucket, k) {
-			return nil
-		}
-		return visitor(k, v)
 	}
-	if err := baseReadTx.buf.ForEach(bucket, getDups); err != nil {
-		return err
-	}
-	baseReadTx.txMu.Lock()
-	err := unsafeForEach(baseReadTx.tx, bucket, visitNoDup)
-	baseReadTx.txMu.Unlock()
-	if err != nil {
-		return err
-	}
-	return baseReadTx.buf.ForEach(bucket, visitor)
+
+	return nil
 }
 
 func (baseReadTx *baseReadTx) UnsafeRange(bucketType Bucket, key, endKey []byte, limit int64) ([][]byte, [][]byte) {
@@ -86,7 +127,6 @@ func (baseReadTx *baseReadTx) UnsafeRange(bucketType Bucket, key, endKey []byte,
 		return nil, nil
 	}
 	if endKey == nil {
-		// forbid duplicates for single keys
 		limit = 1
 	}
 	if limit <= 0 {
@@ -100,7 +140,6 @@ func (baseReadTx *baseReadTx) UnsafeRange(bucketType Bucket, key, endKey []byte,
 		return keys, vals
 	}
 
-	// find/cache bucket
 	bn := bucketType.ID()
 	baseReadTx.txMu.RLock()
 	bucket, ok := baseReadTx.buckets[bn]
@@ -113,7 +152,6 @@ func (baseReadTx *baseReadTx) UnsafeRange(bucketType Bucket, key, endKey []byte,
 		baseReadTx.buckets[bn] = bucket
 	}
 
-	// ignore missing bucket since may have been created in this batch
 	if bucket == nil {
 		if lockHeld {
 			baseReadTx.txMu.Unlock()
@@ -127,16 +165,47 @@ func (baseReadTx *baseReadTx) UnsafeRange(bucketType Bucket, key, endKey []byte,
 	baseReadTx.txMu.Unlock()
 
 	k2, v2 := unsafeRange(c, key, endKey, limit-int64(len(keys)))
-	var filteredK2 [][]byte
-	var filteredV2 [][]byte
-	for i := range k2 {
-		if baseReadTx.buf.tombstoned(bucketType, k2[i]) {
+	if endKey == nil {
+		if len(k2) > 0 {
+			if baseReadTx.buf.tombstoned(bucketType, k2[0]) {
+				return nil, nil
+			}
+		}
+		return append(k2, keys...), append(v2, vals...)
+	}
+	k2, v2 = baseReadTx.filterStaleKeys(bucketType, k2, v2)
+	return append(k2, keys...), append(v2, vals...)
+}
+
+func (baseReadTx *baseReadTx) filterStaleKeys(bucket Bucket, k2, v2 [][]byte) ([][]byte, [][]byte) {
+	bb := baseReadTx.buf.buckets[bucket.ID()]
+	if bb == nil || bb.used == 0 {
+		return k2, v2
+	}
+
+	filteredK := make([][]byte, 0, len(k2))
+	filteredV := make([][]byte, 0, len(v2))
+
+	j := 0
+	for i := 0; i < len(k2); i++ {
+		for j < bb.used && bytes.Compare(bb.buf[j].key, k2[i]) < 0 {
+			j++
+		}
+		if j == bb.used {
+			filteredK = append(filteredK, k2[i:]...)
+			filteredV = append(filteredV, v2[i:]...)
+			break
+		}
+		if bytes.Equal(bb.buf[j].key, k2[i]) {
 			continue
 		}
-		filteredK2 = append(filteredK2, k2[i])
-		filteredV2 = append(filteredV2, v2[i])
+		filteredK = append(filteredK, k2[i])
+		filteredV = append(filteredV, v2[i])
 	}
-	return append(filteredK2, keys...), append(filteredV2, vals...)
+	if len(filteredK) == 0 {
+		return nil, nil
+	}
+	return filteredK, filteredV
 }
 
 type readTx struct {
