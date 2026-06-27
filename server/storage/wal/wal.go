@@ -22,6 +22,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -838,6 +839,12 @@ func (w *WAL) sync() error {
 
 	if w.unsafeNoSync {
 		return nil
+	}
+
+	if delayMsStr := os.Getenv("CAUSAL_DELAY_MS"); delayMsStr != "" {
+		if delayMs, _ := strconv.Atoi(delayMsStr); delayMs > 0 {
+			time.Sleep(time.Duration(delayMs) * time.Millisecond)
+		}
 	}
 
 	start := time.Now()

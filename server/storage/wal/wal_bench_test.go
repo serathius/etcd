@@ -15,6 +15,7 @@
 package wal
 
 import (
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -25,14 +26,8 @@ import (
 )
 
 var k8sBatchDistribution = []int{
-	2, 1, 1, 1, 1, 2, 83, 2, 83, 1, 1, 101, 148, 252, 147, 152, 1, 101, 104, 1,
-	203, 195, 174, 22, 31, 1, 212, 187, 1, 124, 248, 28, 1, 1, 216, 183, 187, 184, 30, 1,
-	30, 190, 180, 191, 204, 1, 25, 1, 1, 179, 221, 1, 398, 1, 1, 2, 170, 230, 168, 229,
-	1, 3, 1, 370, 9, 1, 157, 241, 21, 1, 1, 343, 43, 353, 44, 16, 1, 4, 307, 89,
-	308, 91, 2, 1, 136, 143, 1, 166, 231, 122, 1, 1, 50, 294, 101, 295, 59, 2, 1,
-	327, 27, 176, 193, 1, 76, 1, 1, 29, 300, 38, 356, 10, 67, 1, 320, 13, 178, 114,
-	1, 168, 5, 185, 48, 210, 184, 26, 143, 191, 44, 1, 256, 143, 1, 4, 163, 233, 1,
-	237, 163, 1, 48, 202, 1, 85,
+	1, 1, 1, 1, 1, 1, 30, 51, 30, 26, 78, 56, 44, 84, 59, 66, 60, 22, 100, 118,
+	157, 163,
 }
 
 func BenchmarkWrite100EntryWithoutBatch(b *testing.B) { benchmarkWriteEntry(b, 100, []int{1}) }
@@ -62,6 +57,9 @@ func benchmarkWriteEntry(b *testing.B, size int, batchSamples []int) {
 
 	w, err := Create(zaptest.NewLogger(b), p, []byte("somedata"))
 	require.NoErrorf(b, err, "err = %v, want nil", err)
+	if os.Getenv("WAL_BENCH_NO_SYNC") == "1" {
+		w.unsafeNoSync = true
+	}
 	data := make([]byte, size)
 	for i := 0; i < size; i++ {
 		data[i] = byte(i % 256)
