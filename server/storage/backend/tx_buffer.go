@@ -52,6 +52,20 @@ func (txw *txWriteBuffer) put(bucket Bucket, k, v []byte) {
 	txw.putInternal(bucket, k, v)
 }
 
+func (txw *txWriteBuffer) delete(bucket Bucket, k []byte) {
+	txw.bucket2seq[bucket.ID()] = false
+	txw.putInternal(bucket, k, nil)
+}
+
+func (txw *txWriteBuffer) deleteBucket(bucket Bucket) {
+	b, ok := txw.buckets[bucket.ID()]
+	if !ok {
+		b = newBucketBuffer()
+		txw.buckets[bucket.ID()] = b
+	}
+	b.deleted = true
+}
+
 func (txw *txWriteBuffer) putSeq(bucket Bucket, k, v []byte) {
 	// putSeq is only be called for the data in the Key bucket. The keys
 	// in the Key bucket should be monotonically increasing revisions.
@@ -136,6 +150,20 @@ func (txr *txReadBuffer) ForEach(bucket Bucket, visitor func(k, v []byte) error)
 	return nil
 }
 
+func (txr *txReadBuffer) tombstoned(bucket Bucket, key []byte) bool {
+	if b := txr.buckets[bucket.ID()]; b != nil {
+		return b.tombstoned(key)
+	}
+	return false
+}
+
+func (txr *txReadBuffer) bucketDeleted(bucket Bucket) bool {
+	if b := txr.buckets[bucket.ID()]; b != nil {
+		return b.deleted
+	}
+	return false
+}
+
 // unsafeCopy returns a copy of txReadBuffer, caller should acquire backend.readTx.RLock()
 func (txr *txReadBuffer) unsafeCopy() txReadBuffer {
 	txrCopy := txReadBuffer{
@@ -157,13 +185,13 @@ type kv struct {
 
 // bucketBuffer buffers key-value pairs that are pending commit.
 type bucketBuffer struct {
-	buf []kv
-	// used tracks number of elements in use so buf can be reused without reallocation.
-	used int
+	buf     []kv
+	used    int
+	deleted bool
 }
 
 func newBucketBuffer() *bucketBuffer {
-	return &bucketBuffer{buf: make([]kv, bucketBufferInitialSize), used: 0}
+	return &bucketBuffer{buf: make([]kv, bucketBufferInitialSize), used: 0, deleted: false}
 }
 
 func (bb *bucketBuffer) Range(key, endKey []byte, limit int64) (keys [][]byte, vals [][]byte) {
@@ -174,8 +202,10 @@ func (bb *bucketBuffer) Range(key, endKey []byte, limit int64) (keys [][]byte, v
 	}
 	if len(endKey) == 0 {
 		if bytes.Equal(key, bb.buf[idx].key) {
-			keys = append(keys, bb.buf[idx].key)
-			vals = append(vals, bb.buf[idx].val)
+			if bb.buf[idx].val != nil {
+				keys = append(keys, bb.buf[idx].key)
+				vals = append(vals, bb.buf[idx].val)
+			}
 		}
 		return keys, vals
 	}
@@ -186,6 +216,9 @@ func (bb *bucketBuffer) Range(key, endKey []byte, limit int64) (keys [][]byte, v
 		if bytes.Compare(endKey, bb.buf[i].key) <= 0 {
 			break
 		}
+		if bb.buf[i].val == nil {
+			continue
+		}
 		keys = append(keys, bb.buf[i].key)
 		vals = append(vals, bb.buf[i].val)
 	}
@@ -194,11 +227,23 @@ func (bb *bucketBuffer) Range(key, endKey []byte, limit int64) (keys [][]byte, v
 
 func (bb *bucketBuffer) ForEach(visitor func(k, v []byte) error) error {
 	for i := 0; i < bb.used; i++ {
+		if bb.buf[i].val == nil {
+			continue
+		}
 		if err := visitor(bb.buf[i].key, bb.buf[i].val); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (bb *bucketBuffer) tombstoned(key []byte) bool {
+	f := func(i int) bool { return bytes.Compare(bb.buf[i].key, key) >= 0 }
+	idx := sort.Search(bb.used, f)
+	if idx >= 0 && idx < bb.used && bytes.Equal(key, bb.buf[idx].key) {
+		return bb.buf[idx].val == nil
+	}
+	return false
 }
 
 func (bb *bucketBuffer) add(k, v []byte) {
@@ -213,6 +258,9 @@ func (bb *bucketBuffer) add(k, v []byte) {
 
 // merge merges data from bbsrc into bb.
 func (bb *bucketBuffer) merge(bbsrc *bucketBuffer) {
+	if bbsrc.deleted {
+		bb.deleted = true
+	}
 	for i := 0; i < bbsrc.used; i++ {
 		bb.add(bbsrc.buf[i].key, bbsrc.buf[i].val)
 	}
@@ -251,8 +299,9 @@ func (bb *bucketBuffer) CopyUsed() *bucketBuffer {
 	verify.Assert(bb.used <= len(bb.buf),
 		"used (%d) should never be bigger than the length of buf (%d)", bb.used, len(bb.buf))
 	bbCopy := bucketBuffer{
-		buf:  make([]kv, bb.used),
-		used: bb.used,
+		buf:     make([]kv, bb.used),
+		used:    bb.used,
+		deleted: bb.deleted,
 	}
 	copy(bbCopy.buf, bb.buf[:bb.used])
 	return &bbCopy

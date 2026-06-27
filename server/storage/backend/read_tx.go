@@ -52,6 +52,9 @@ type baseReadTx struct {
 }
 
 func (baseReadTx *baseReadTx) UnsafeForEach(bucket Bucket, visitor func(k, v []byte) error) error {
+	if baseReadTx.buf.bucketDeleted(bucket) {
+		return nil
+	}
 	dups := make(map[string]struct{})
 	getDups := func(k, v []byte) error {
 		dups[string(k)] = struct{}{}
@@ -59,6 +62,9 @@ func (baseReadTx *baseReadTx) UnsafeForEach(bucket Bucket, visitor func(k, v []b
 	}
 	visitNoDup := func(k, v []byte) error {
 		if _, ok := dups[string(k)]; ok {
+			return nil
+		}
+		if baseReadTx.buf.tombstoned(bucket, k) {
 			return nil
 		}
 		return visitor(k, v)
@@ -76,6 +82,9 @@ func (baseReadTx *baseReadTx) UnsafeForEach(bucket Bucket, visitor func(k, v []b
 }
 
 func (baseReadTx *baseReadTx) UnsafeRange(bucketType Bucket, key, endKey []byte, limit int64) ([][]byte, [][]byte) {
+	if baseReadTx.buf.bucketDeleted(bucketType) {
+		return nil, nil
+	}
 	if endKey == nil {
 		// forbid duplicates for single keys
 		limit = 1
@@ -118,7 +127,16 @@ func (baseReadTx *baseReadTx) UnsafeRange(bucketType Bucket, key, endKey []byte,
 	baseReadTx.txMu.Unlock()
 
 	k2, v2 := unsafeRange(c, key, endKey, limit-int64(len(keys)))
-	return append(k2, keys...), append(v2, vals...)
+	var filteredK2 [][]byte
+	var filteredV2 [][]byte
+	for i := range k2 {
+		if baseReadTx.buf.tombstoned(bucketType, k2[i]) {
+			continue
+		}
+		filteredK2 = append(filteredK2, k2[i])
+		filteredV2 = append(filteredV2, v2[i])
+	}
+	return append(filteredK2, keys...), append(filteredV2, vals...)
 }
 
 type readTx struct {
