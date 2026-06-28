@@ -524,6 +524,16 @@ func PopulateInitialRevisions(ctx context.Context, client *clientv3.Client, data
 	return nil
 }
 
+var basePortCounter = atomic.Int64{}
+
+func getNextBasePort() int {
+	// Initialize to a high starting range if unitialized (0)
+	if basePortCounter.Load() == 0 {
+		basePortCounter.CompareAndSwap(0, 25000)
+	}
+	return int(basePortCounter.Add(10))
+}
+
 func BenchmarkWriteThroughput(b *testing.B) {
 	e2e.SkipInShortMode(b)
 
@@ -542,6 +552,7 @@ func BenchmarkWriteThroughput(b *testing.B) {
 			e2e.WithLogLevel("warn"),
 			e2e.WithDataDirPath(dataDir),
 			e2e.WithKeepDataDir(true),
+			e2e.WithBasePort(getNextBasePort()),
 		)
 		if err != nil {
 			tb.Fatal(err)
