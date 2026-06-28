@@ -320,7 +320,7 @@ func runBenchmarkWriteThroughput(ctx context.Context, b *testing.B, client *clie
 	}
 
 	if loadType == loadWatcher {
-		watcherCount := 10
+		watcherCount := 1
 		if countStr := os.Getenv("BENCHMARK_WATCHER_COUNT"); countStr != "" {
 			if parsed, err := strconv.Atoi(countStr); err == nil {
 				watcherCount = parsed
