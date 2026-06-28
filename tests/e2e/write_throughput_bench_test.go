@@ -19,41 +19,165 @@ import (
 	"go.etcd.io/etcd/tests/v3/framework/e2e"
 )
 
-type Clock interface {
-	Now() time.Time
-	Since(time.Time) time.Duration
-}
+// 1. High-Level Benchmark Entry Point
+func BenchmarkWriteThroughput(b *testing.B) {
+	e2e.SkipInShortMode(b)
 
-type RealClock struct{}
+	nsCount := 50
+	podPerNs := 3000
+	payloadSize := 10145
+	nodeCount := 5000 // matching dims for SetupPreseededDatabase name hashing
+	totalPods := nsCount * podPerNs
+	data := PrepareBenchmarkData(nsCount, podPerNs, payloadSize)
 
-func (RealClock) Now() time.Time                  { return time.Now() }
-func (RealClock) Since(t time.Time) time.Duration { return time.Since(t) }
+	createStoreFn := func(tb testing.TB, dataDir string) (*clientv3.Client, func()) {
+		ctx := context.Background()
+		epc, err := e2e.NewEtcdProcessCluster(ctx, tb,
+			e2e.WithClusterSize(1),
+			e2e.WithQuotaBackendBytes(8589934592),
+			e2e.WithLogLevel("warn"),
+			e2e.WithDataDirPath(dataDir),
+			e2e.WithKeepDataDir(true),
+			e2e.WithBasePort(getNextBasePort()),
+		)
+		if err != nil {
+			tb.Fatal(err)
+		}
 
-const (
-	trafficDeleteCreate = "DeleteCreate"
-	trafficPatch        = "Patch"
+		cfg := clientv3.Config{
+			Endpoints:   epc.EndpointsGRPC(),
+			DialTimeout: 5 * time.Second,
+		}
+		client, err := clientv3.New(cfg)
+		if err != nil {
+			tb.Fatal(err)
+		}
 
-	loadNone            = "None"
-	loadWatcher         = "Watcher"
-	loadLister          = "Lister"
-	loadListerExactRV   = "ListerExactRV"
-	loadListerNotOlderThan = "ListerNotOlderThan"
-	loadWatchList       = "WatchList"
-)
-
-type BenchmarkData struct {
-	Keys      []string
-	Val       []byte
-	Revisions []atomic.Int64
-}
-
-
-func getCurrentRevision(ctx context.Context, client *clientv3.Client) (int64, error) {
-	resp, err := client.KV.Get(ctx, "/", clientv3.WithKeysOnly(), clientv3.WithLimit(1))
-	if err != nil {
-		return 0, err
+		return client, func() {
+			client.Close()
+			epc.Close()
+		}
 	}
-	return resp.Header.Revision, nil
+
+	seedFn := func(ctx context.Context, client *clientv3.Client) error {
+		return preseedDatabase(ctx, client, data)
+	}
+
+	SetupPreseededDatabase(b, nsCount, totalPods, nodeCount, data, seedFn, createStoreFn)
+
+	dataDir := os.Getenv("BENCHMARK_ETCD_DATA_DIR")
+	if dataDir == "" {
+		b.Fatal("BENCHMARK_ETCD_DATA_DIR not set after SetupPreseededDatabase")
+	}
+
+	ctx := context.Background()
+	client, stopStore := createStoreFn(b, dataDir)
+	defer stopStore()
+
+	resp, err := client.KV.Get(ctx, "/pods/", clientv3.WithPrefix(), clientv3.WithCountOnly())
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Logf("Validated database state: total keys under /pods/ prefix = %d", resp.Count)
+
+	if err := PopulateInitialRevisions(ctx, client, &data); err != nil {
+		b.Fatal(err)
+	}
+
+	compactFn := func(ctx context.Context, rv int64) error {
+		_, err := client.Compact(ctx, rv, clientv3.WithCompactPhysical())
+		return err
+	}
+
+	RunBenchmarkWriteThroughput(ctx, b, client, data, nil, compactFn)
+}
+
+// 2. Direct Dependencies of BenchmarkWriteThroughput
+func PrepareBenchmarkData(nsCount, podPerNs int, payloadSize int) BenchmarkData {
+	totalKeys := nsCount * podPerNs
+	keys := make([]string, 0, totalKeys)
+	for i := 0; i < nsCount; i++ {
+		ns := fmt.Sprintf("ns-%d", i)
+		for j := 0; j < podPerNs; j++ {
+			keys = append(keys, fmt.Sprintf("/pods/%s/pod-%d", ns, j))
+		}
+	}
+	val := make([]byte, payloadSize)
+	revisions := make([]atomic.Int64, totalKeys)
+	return BenchmarkData{
+		Keys:      keys,
+		Val:       val,
+		Revisions: revisions,
+	}
+}
+
+func SetupPreseededDatabase(b *testing.B, nsCount, totalPods, nodeCount int, data BenchmarkData, seedFn func(ctx context.Context, client *clientv3.Client) error, createStoreFn func(b testing.TB, dataDir string) (*clientv3.Client, func())) {
+	archivePath := fmt.Sprintf("/tmp/etcd_db_%d_%d_%d.tar.gz", nsCount, totalPods, nodeCount)
+
+	var dataDir string
+	var isPreseeded bool
+	if _, err := os.Stat(archivePath); err == nil {
+		dataDir = b.TempDir()
+		cmd := exec.Command("tar", "-xzf", archivePath, "-C", dataDir)
+		if err := cmd.Run(); err != nil {
+			b.Fatalf("failed to unarchive pre-seeded database: %v", err)
+		}
+		isPreseeded = true
+		os.Setenv("ETCD_DATA_PRESEEDED", "true")
+	} else {
+		dataDir = b.TempDir()
+		os.Setenv("ETCD_DATA_PRESEEDED", "false")
+	}
+	os.Setenv("BENCHMARK_ETCD_DATA_DIR", dataDir)
+
+	b.Cleanup(func() {
+		os.Unsetenv("BENCHMARK_ETCD_DATA_DIR")
+		os.Unsetenv("ETCD_DATA_PRESEEDED")
+	})
+
+	if !isPreseeded {
+		ctx := context.Background()
+		client, stopStore := createStoreFn(b, dataDir)
+
+		if err := seedFn(ctx, client); err != nil {
+			b.Fatalf("failed to seed database: %v", err)
+		}
+
+		stopStore()
+
+		cmd := exec.Command("tar", "-czf", archivePath, "-C", dataDir, ".")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			b.Fatalf("failed to archive database: %v. Output: %s", err, string(out))
+		}
+		os.Setenv("ETCD_DATA_PRESEEDED", "true")
+	}
+}
+
+var basePortCounter = atomic.Int64{}
+
+func getNextBasePort() int {
+	if basePortCounter.Load() == 0 {
+		basePortCounter.CompareAndSwap(0, 25000)
+	}
+	return int(basePortCounter.Add(10))
+}
+
+func PopulateInitialRevisions(ctx context.Context, client *clientv3.Client, data *BenchmarkData) error {
+	resp, err := client.KV.Get(ctx, "/pods/", clientv3.WithPrefix())
+	if err != nil {
+		return err
+	}
+	keyToIndex := make(map[string]int, len(data.Keys))
+	for idx, key := range data.Keys {
+		keyToIndex[key] = idx
+	}
+	for _, kv := range resp.Kvs {
+		key := string(kv.Key)
+		if idx, ok := keyToIndex[key]; ok {
+			data.Revisions[idx].Store(kv.ModRevision)
+		}
+	}
+	return nil
 }
 
 func RunBenchmarkWriteThroughput(ctx context.Context, b *testing.B, client *clientv3.Client, data BenchmarkData, tracker *WatchLatencyTracker, compactFn func(context.Context, int64) error) {
@@ -113,6 +237,7 @@ func RunBenchmarkWriteThroughput(ctx context.Context, b *testing.B, client *clie
 	}
 }
 
+// 3. Direct Dependencies of RunBenchmarkWriteThroughput
 func preseedDatabase(ctx context.Context, client *clientv3.Client, data BenchmarkData) error {
 	errCh := make(chan error, len(data.Keys))
 	var wg sync.WaitGroup
@@ -149,46 +274,12 @@ func preseedDatabase(ctx context.Context, client *clientv3.Client, data Benchmar
 	return nil
 }
 
-func SetupPreseededDatabase(b *testing.B, nsCount, totalPods, nodeCount int, data BenchmarkData, seedFn func(ctx context.Context, client *clientv3.Client) error, createStoreFn func(b testing.TB, dataDir string) (*clientv3.Client, func())) {
-	archivePath := fmt.Sprintf("/tmp/etcd_db_%d_%d_%d.tar.gz", nsCount, totalPods, nodeCount)
-
-	var dataDir string
-	var isPreseeded bool
-	if _, err := os.Stat(archivePath); err == nil {
-		dataDir = b.TempDir()
-		cmd := exec.Command("tar", "-xzf", archivePath, "-C", dataDir)
-		if err := cmd.Run(); err != nil {
-			b.Fatalf("failed to unarchive pre-seeded database: %v", err)
-		}
-		isPreseeded = true
-		os.Setenv("ETCD_DATA_PRESEEDED", "true")
-	} else {
-		dataDir = b.TempDir()
-		os.Setenv("ETCD_DATA_PRESEEDED", "false")
+func getCurrentRevision(ctx context.Context, client *clientv3.Client) (int64, error) {
+	resp, err := client.KV.Get(ctx, "/", clientv3.WithKeysOnly(), clientv3.WithLimit(1))
+	if err != nil {
+		return 0, err
 	}
-	os.Setenv("BENCHMARK_ETCD_DATA_DIR", dataDir)
-
-	b.Cleanup(func() {
-		os.Unsetenv("BENCHMARK_ETCD_DATA_DIR")
-		os.Unsetenv("ETCD_DATA_PRESEEDED")
-	})
-
-	if !isPreseeded {
-		ctx := context.Background()
-		client, stopStore := createStoreFn(b, dataDir)
-
-		if err := seedFn(ctx, client); err != nil {
-			b.Fatalf("failed to seed database: %v", err)
-		}
-
-		stopStore()
-
-		cmd := exec.Command("tar", "-czf", archivePath, "-C", dataDir, ".")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			b.Fatalf("failed to archive database: %v. Output: %s", err, string(out))
-		}
-		os.Setenv("ETCD_DATA_PRESEEDED", "true")
-	}
+	return resp.Header.Revision, nil
 }
 
 func runBenchmarkWriteThroughput(ctx context.Context, b *testing.B, client *clientv3.Client, data BenchmarkData, trafficType string, loadType string, tracker *WatchLatencyTracker) {
@@ -208,9 +299,8 @@ func runBenchmarkWriteThroughput(ctx context.Context, b *testing.B, client *clie
 	var index atomic.Uint64
 	var latestRV atomic.Int64
 
-	// Determine trackers
-	var writeTracker *WatchLatencyTracker  // Tracker used to record writes (sets annotation)
-	var clientTracker *WatchLatencyTracker // Tracker used by background watchers (client-side latency)
+	var writeTracker *WatchLatencyTracker
+	var clientTracker *WatchLatencyTracker
 
 	if tracker != nil {
 		writeTracker = tracker
@@ -297,6 +387,42 @@ func runBenchmarkWriteThroughput(ctx context.Context, b *testing.B, client *clie
 	}
 }
 
+// 4. Direct Dependencies of runBenchmarkWriteThroughput
+func startBackgroundWatchers(ctx context.Context, client *clientv3.Client, data BenchmarkData, count int, wg *sync.WaitGroup, stopCh <-chan struct{}, eventCounter *atomic.Uint64, tracker *WatchLatencyTracker, resourceVersion int64) {
+	for i := 0; i < count; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			opts := []clientv3.OpOption{
+				clientv3.WithRev(resourceVersion + 1),
+				clientv3.WithPrefix(),
+				clientv3.WithPrevKV(),
+			}
+			wch := client.Watch(ctx, "/pods/", opts...)
+			for {
+				select {
+				case <-stopCh:
+					return
+				case <-ctx.Done():
+					return
+				case wres, ok := <-wch:
+					if !ok {
+						return
+					}
+					if wres.Err() != nil {
+						return
+					}
+					for _, ev := range wres.Events {
+						eventCounter.Add(1)
+						if tracker != nil {
+							tracker.HandleEvent(ev)
+						}
+					}
+				}
+			}
+		}()
+	}
+}
 
 type WatchLatencyTracker struct {
 	clock                  Clock
@@ -381,7 +507,6 @@ func (t *WatchLatencyTracker) GetP99Latency() time.Duration {
 	return t.durations[idx]
 }
 
-
 func runTraffic(ctx context.Context, b *testing.B, client *clientv3.Client, data BenchmarkData, trafficType string, index int, latestRV *atomic.Int64, tracker *WatchLatencyTracker) (writes uint64) {
 	key := data.Keys[index]
 	switch trafficType {
@@ -452,157 +577,31 @@ func runTraffic(ctx context.Context, b *testing.B, client *clientv3.Client, data
 	return writes
 }
 
-func startBackgroundWatchers(ctx context.Context, client *clientv3.Client, data BenchmarkData, count int, wg *sync.WaitGroup, stopCh <-chan struct{}, eventCounter *atomic.Uint64, tracker *WatchLatencyTracker, resourceVersion int64) {
-	for i := 0; i < count; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			opts := []clientv3.OpOption{
-				clientv3.WithRev(resourceVersion + 1),
-				clientv3.WithPrefix(),
-				clientv3.WithPrevKV(),
-			}
-			wch := client.Watch(ctx, "/pods/", opts...)
-			for {
-				select {
-				case <-stopCh:
-					return
-				case <-ctx.Done():
-					return
-				case wres, ok := <-wch:
-					if !ok {
-						return
-					}
-					if wres.Err() != nil {
-						return
-					}
-					for _, ev := range wres.Events {
-						eventCounter.Add(1)
-						if tracker != nil {
-							tracker.HandleEvent(ev)
-						}
-					}
-				}
-			}
-		}()
-	}
+// 5. Lower-Level Auxiliary Structs & Common Interfaces
+type BenchmarkData struct {
+	Keys      []string
+	Val       []byte
+	Revisions []atomic.Int64
 }
 
-func PrepareBenchmarkData(nsCount, podPerNs int, payloadSize int) BenchmarkData {
-	totalKeys := nsCount * podPerNs
-	keys := make([]string, 0, totalKeys)
-	for i := 0; i < nsCount; i++ {
-		ns := fmt.Sprintf("ns-%d", i)
-		for j := 0; j < podPerNs; j++ {
-			keys = append(keys, fmt.Sprintf("/pods/%s/pod-%d", ns, j))
-		}
-	}
-	val := make([]byte, payloadSize)
-	revisions := make([]atomic.Int64, totalKeys)
-	return BenchmarkData{
-		Keys:      keys,
-		Val:       val,
-		Revisions: revisions,
-	}
+type Clock interface {
+	Now() time.Time
+	Since(time.Time) time.Duration
 }
 
-func PopulateInitialRevisions(ctx context.Context, client *clientv3.Client, data *BenchmarkData) error {
-	resp, err := client.KV.Get(ctx, "/pods/", clientv3.WithPrefix())
-	if err != nil {
-		return err
-	}
-	keyToIndex := make(map[string]int, len(data.Keys))
-	for idx, key := range data.Keys {
-		keyToIndex[key] = idx
-	}
-	for _, kv := range resp.Kvs {
-		key := string(kv.Key)
-		if idx, ok := keyToIndex[key]; ok {
-			data.Revisions[idx].Store(kv.ModRevision)
-		}
-	}
-	return nil
-}
+type RealClock struct{}
 
-var basePortCounter = atomic.Int64{}
+func (RealClock) Now() time.Time                  { return time.Now() }
+func (RealClock) Since(t time.Time) time.Duration { return time.Since(t) }
 
-func getNextBasePort() int {
-	// Initialize to a high starting range if unitialized (0)
-	if basePortCounter.Load() == 0 {
-		basePortCounter.CompareAndSwap(0, 25000)
-	}
-	return int(basePortCounter.Add(10))
-}
+const (
+	trafficDeleteCreate = "DeleteCreate"
+	trafficPatch        = "Patch"
 
-func BenchmarkWriteThroughput(b *testing.B) {
-	e2e.SkipInShortMode(b)
-
-	nsCount := 50
-	podPerNs := 3000
-	payloadSize := 10145
-	nodeCount := 5000 // matching dims for SetupPreseededDatabase name hashing
-	totalPods := nsCount * podPerNs
-	data := PrepareBenchmarkData(nsCount, podPerNs, payloadSize)
-
-	createStoreFn := func(tb testing.TB, dataDir string) (*clientv3.Client, func()) {
-		ctx := context.Background()
-		epc, err := e2e.NewEtcdProcessCluster(ctx, tb,
-			e2e.WithClusterSize(1),
-			e2e.WithQuotaBackendBytes(8589934592),
-			e2e.WithLogLevel("warn"),
-			e2e.WithDataDirPath(dataDir),
-			e2e.WithKeepDataDir(true),
-			e2e.WithBasePort(getNextBasePort()),
-		)
-		if err != nil {
-			tb.Fatal(err)
-		}
-
-		cfg := clientv3.Config{
-			Endpoints:   epc.EndpointsGRPC(),
-			DialTimeout: 5 * time.Second,
-		}
-		client, err := clientv3.New(cfg)
-		if err != nil {
-			tb.Fatal(err)
-		}
-
-		return client, func() {
-			client.Close()
-			epc.Close()
-		}
-	}
-
-	seedFn := func(ctx context.Context, client *clientv3.Client) error {
-		return preseedDatabase(ctx, client, data)
-	}
-
-	SetupPreseededDatabase(b, nsCount, totalPods, nodeCount, data, seedFn, createStoreFn)
-
-	dataDir := os.Getenv("BENCHMARK_ETCD_DATA_DIR")
-	if dataDir == "" {
-		b.Fatal("BENCHMARK_ETCD_DATA_DIR not set after SetupPreseededDatabase")
-	}
-
-	ctx := context.Background()
-	client, stopStore := createStoreFn(b, dataDir)
-	defer stopStore()
-
-	resp, err := client.KV.Get(ctx, "/pods/", clientv3.WithPrefix(), clientv3.WithCountOnly())
-	if err != nil {
-		b.Fatal(err)
-	}
-	b.Logf("Validated database state: total keys under /pods/ prefix = %d", resp.Count)
-
-	if err := PopulateInitialRevisions(ctx, client, &data); err != nil {
-		b.Fatal(err)
-	}
-
-	compactFn := func(ctx context.Context, rv int64) error {
-		_, err := client.Compact(ctx, rv, clientv3.WithCompactPhysical())
-		return err
-	}
-
-	RunBenchmarkWriteThroughput(ctx, b, client, data, nil, compactFn)
-}
-
+	loadNone               = "None"
+	loadWatcher            = "Watcher"
+	loadLister             = "Lister"
+	loadListerExactRV      = "ListerExactRV"
+	loadListerNotOlderThan = "ListerNotOlderThan"
+	loadWatchList          = "WatchList"
+)
