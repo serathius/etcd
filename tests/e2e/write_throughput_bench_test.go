@@ -1,8 +1,8 @@
 package e2e
 
 import (
-	"encoding/binary"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,16 +16,17 @@ import (
 	"time"
 
 	"go.etcd.io/etcd/client/v3"
-	"k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/fields"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/apimachinery/pkg/watch"
-	"k8s.io/apiserver/pkg/storage"
-	"k8s.io/utils/clock"
 )
+
+type Clock interface {
+	Now() time.Time
+	Since(time.Time) time.Duration
+}
+
+type RealClock struct{}
+
+func (RealClock) Now() time.Time                  { return time.Now() }
+func (RealClock) Since(t time.Time) time.Duration { return time.Since(t) }
 
 const (
 	trafficDeleteCreate = "DeleteCreate"
