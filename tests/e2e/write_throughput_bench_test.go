@@ -320,13 +320,7 @@ func runBenchmarkWriteThroughput(ctx context.Context, b *testing.B, client *clie
 	}
 
 	if loadType == loadWatcher {
-		watcherCount := 1
-		if countStr := os.Getenv("BENCHMARK_WATCHER_COUNT"); countStr != "" {
-			if parsed, err := strconv.Atoi(countStr); err == nil {
-				watcherCount = parsed
-			}
-		}
-		startBackgroundWatchers(ctx, client, data, watcherCount, &workersWg, stopBackgroundLoadCh, &watchEvents, clientTracker, latestRV.Load())
+		startBackgroundWatchers(ctx, client, data, 1, &workersWg, stopBackgroundLoadCh, &watchEvents, clientTracker, latestRV.Load())
 	}
 
 	var mu sync.Mutex
