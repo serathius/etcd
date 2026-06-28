@@ -25,10 +25,13 @@ var (
 	causalDelayMs, _  = strconv.Atoi(os.Getenv("ETCD_CAUSAL_DELAY_MS"))
 )
 
-// InjectCausalDelay blocks execution if target matches ETCD_CAUSAL_DELAY_TARGET.
+// InjectCausalDelay blocks execution if target matches ETCD_CAUSAL_DELAY_TARGET
+// and the database pre-seeding is complete.
 func InjectCausalDelay(target string) {
 	if causalDelayMs <= 0 || causalDelayTarget != target {
 		return
 	}
-	time.Sleep(time.Duration(causalDelayMs) * time.Millisecond)
+	if os.Getenv("ETCD_DATA_PRESEEDED") == "true" {
+		time.Sleep(time.Duration(causalDelayMs) * time.Millisecond)
+	}
 }
