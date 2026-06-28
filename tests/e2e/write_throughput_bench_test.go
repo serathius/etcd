@@ -124,6 +124,9 @@ func createStore(tb testing.TB, dataDir string) (*clientv3.Client, storeCleanup)
 		e2e.WithDataDirPath(dataDir),
 		e2e.WithKeepDataDir(true),
 		e2e.WithBasePort(getNextBasePort()),
+		e2e.EPClusterOption(func(cfg *e2e.EtcdProcessClusterConfig) {
+			cfg.ServerConfig.BackendBatchInterval = time.Second
+		}),
 	)
 	if err != nil {
 		tb.Fatal(err)
