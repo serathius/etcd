@@ -970,6 +970,7 @@ func (s *EtcdServer) Defragment() error {
 }
 
 func (s *EtcdServer) applyAll(ep *etcdProgress, apply *toApply) {
+	InjectCausalDelay("apply")
 	s.applySnapshot(ep, apply)
 	s.applyEntries(ep, apply)
 	backend.VerifyBackendConsistency(s.Backend(), s.Logger(), true, schema.AllBuckets...)
