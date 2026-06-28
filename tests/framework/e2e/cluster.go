@@ -715,8 +715,15 @@ func (epc *EtcdProcessCluster) MinServerVersion() (*semver.Version, error) {
 }
 
 func values(cfg embed.Config) map[string]string {
+	enablePprof := cfg.EnablePprof
+	unsafeNoFsync := cfg.UnsafeNoFsync
+
 	fs := flag.NewFlagSet("etcd", flag.ContinueOnError)
 	cfg.AddFlags(fs)
+
+	cfg.EnablePprof = enablePprof
+	cfg.UnsafeNoFsync = unsafeNoFsync
+
 	values := map[string]string{}
 	fs.VisitAll(func(f *flag.Flag) {
 		value := f.Value.String()
