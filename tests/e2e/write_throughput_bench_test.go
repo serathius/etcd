@@ -87,21 +87,33 @@ func SetupPreseededDatabase(b *testing.B, nsCount, totalPods, nodeCount int, dat
 			b.Fatalf("failed to unarchive pre-seeded database: %v", err)
 		}
 		isPreseeded = true
-		os.Setenv("ETCD_DATA_PRESEEDED", "true")
 	} else {
 		dataDir = b.TempDir()
-		os.Setenv("ETCD_DATA_PRESEEDED", "false")
 	}
 	os.Setenv("BENCHMARK_ETCD_DATA_DIR", dataDir)
 
 	b.Cleanup(func() {
 		os.Unsetenv("BENCHMARK_ETCD_DATA_DIR")
-		os.Unsetenv("ETCD_DATA_PRESEEDED")
 	})
 
 	if !isPreseeded {
 		ctx := context.Background()
+
+		// Temporarily hide causal delay variables from the spawned seeding process
+		delayTarget := os.Getenv("ETCD_CAUSAL_DELAY_TARGET")
+		delayMs := os.Getenv("ETCD_CAUSAL_DELAY_MS")
+		os.Unsetenv("ETCD_CAUSAL_DELAY_TARGET")
+		os.Unsetenv("ETCD_CAUSAL_DELAY_MS")
+
 		client, cleanup := createStore(b, dataDir)
+
+		// Restore them immediately after seeding cluster is spawned
+		if delayTarget != "" {
+			os.Setenv("ETCD_CAUSAL_DELAY_TARGET", delayTarget)
+		}
+		if delayMs != "" {
+			os.Setenv("ETCD_CAUSAL_DELAY_MS", delayMs)
+		}
 
 		if err := preseedDatabase(ctx, client, data); err != nil {
 			b.Fatalf("failed to seed database: %v", err)
@@ -113,7 +125,6 @@ func SetupPreseededDatabase(b *testing.B, nsCount, totalPods, nodeCount int, dat
 		if out, err := cmd.CombinedOutput(); err != nil {
 			b.Fatalf("failed to archive database: %v. Output: %s", err, string(out))
 		}
-		os.Setenv("ETCD_DATA_PRESEEDED", "true")
 	}
 }
 
