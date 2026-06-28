@@ -47,11 +47,21 @@ type BenchmarkData struct {
 }
 
 
-func RunBenchmarkWriteThroughput(ctx context.Context, b *testing.B, store storage.Interface, data BenchmarkData, hasIndex bool, tracker *WatchLatencyTracker, compactFn func(context.Context, uint64) error) {
+func getCurrentRevision(ctx context.Context, client *clientv3.Client) (int64, error) {
+	resp, err := client.KV.Get(ctx, "/", clientv3.WithKeysOnly(), clientv3.WithLimit(1))
+	if err != nil {
+		return 0, err
+	}
+	return resp.Header.Revision, nil
+}
+
+func RunBenchmarkWriteThroughput(ctx context.Context, b *testing.B, client *clientv3.Client, data BenchmarkData, tracker *WatchLatencyTracker, compactFn func(context.Context, int64) error) {
 	if os.Getenv("ETCD_DATA_PRESEEDED") != "true" {
-		require.NoError(b, PrecreateBenchmarkPods(ctx, store, data))
+		if err := preseedDatabase(ctx, client, data); err != nil {
+			b.Fatal(err)
+		}
 		if compactFn != nil {
-			rv, err := store.GetCurrentResourceVersion(ctx)
+			rv, err := getCurrentRevision(ctx, client)
 			if err != nil {
 				panic(fmt.Sprintf("Failed to get current resource version for seeding compaction: %v", err))
 			}
@@ -62,7 +72,6 @@ func RunBenchmarkWriteThroughput(ctx context.Context, b *testing.B, store storag
 			}
 		}
 	}
-	require.NoError(b, waitForConsistent(ctx, store))
 
 	for _, trafficType := range []string{trafficDeleteCreate, trafficPatch} {
 		b.Run(fmt.Sprintf("Traffic=%s", trafficType), func(b *testing.B) {
@@ -76,33 +85,26 @@ func RunBenchmarkWriteThroughput(ctx context.Context, b *testing.B, store storag
 				b.Run(fmt.Sprintf("Parallelism=%d", parallelism), func(b *testing.B) {
 					loadTypes := []string{loadNone, loadWatcher}
 					for _, loadType := range loadTypes {
-						useIndexOptions := []bool{false}
-						if hasIndex && loadType != loadNone {
-							useIndexOptions = []bool{false, true}
-						}
-						for _, readIndexed := range useIndexOptions {
-							b.Run(fmt.Sprintf("Background=%s/UseIndex=%v", loadType, readIndexed), func(b *testing.B) {
-								if compactFn != nil {
-									rv, err := store.GetCurrentResourceVersion(ctx)
-									if err != nil {
-										panic(fmt.Sprintf("Failed to get current resource version for compaction: %v", err))
-									}
-									if rv > 0 {
-										if err := compactFn(ctx, rv); err != nil && !strings.Contains(err.Error(), "compacted") {
-											panic(fmt.Sprintf("Failed to compact etcd to revision %d before benchmark: %v", rv, err))
-										}
+						b.Run(fmt.Sprintf("Background=%s", loadType), func(b *testing.B) {
+							if compactFn != nil {
+								rv, err := getCurrentRevision(ctx, client)
+								if err != nil {
+									panic(fmt.Sprintf("Failed to get current resource version for compaction: %v", err))
+								}
+								if rv > 0 {
+									if err := compactFn(ctx, rv); err != nil && !strings.Contains(err.Error(), "compacted") {
+										panic(fmt.Sprintf("Failed to compact etcd to revision %d before benchmark: %v", rv, err))
 									}
 								}
-								require.NoError(b, waitForConsistent(ctx, store))
-								stdruntime.GC()
-								b.SetParallelism(parallelism)
-								if tracker != nil {
-									rv, _ := store.GetCurrentResourceVersion(ctx)
-									tracker.Reset(rv, time.Now())
-								}
-								runBenchmarkWriteThroughput(ctx, b, store, data, trafficType, loadType, readIndexed, tracker)
-							})
-						}
+							}
+							stdruntime.GC()
+							b.SetParallelism(parallelism)
+							if tracker != nil {
+								rv, _ := getCurrentRevision(ctx, client)
+								tracker.Reset(uint64(rv), time.Now())
+							}
+							runBenchmarkWriteThroughput(ctx, b, client, data, trafficType, loadType, tracker)
+						})
 					}
 				})
 			}
@@ -146,7 +148,7 @@ func preseedDatabase(ctx context.Context, client *clientv3.Client, data Benchmar
 	return nil
 }
 
-func SetupPreseededDatabase(b *testing.B, nsCount, totalPods, nodeCount int, data BenchmarkData, seedFn func(ctx context.Context, store storage.Interface) error, createStoreFn func(b testing.TB, dataDir string) (storage.Interface, func())) {
+func SetupPreseededDatabase(b *testing.B, nsCount, totalPods, nodeCount int, data BenchmarkData, seedFn func(ctx context.Context, client *clientv3.Client) error, createStoreFn func(b testing.TB, dataDir string) (*clientv3.Client, func())) {
 	archivePath := fmt.Sprintf("/tmp/etcd_db_%d_%d_%d.tar.gz", nsCount, totalPods, nodeCount)
 
 	var dataDir string
@@ -172,9 +174,9 @@ func SetupPreseededDatabase(b *testing.B, nsCount, totalPods, nodeCount int, dat
 
 	if !isPreseeded {
 		ctx := context.Background()
-		store, stopStore := createStoreFn(b, dataDir)
+		client, stopStore := createStoreFn(b, dataDir)
 
-		if err := seedFn(ctx, store); err != nil {
+		if err := seedFn(ctx, client); err != nil {
 			b.Fatalf("failed to seed database: %v", err)
 		}
 
@@ -188,7 +190,7 @@ func SetupPreseededDatabase(b *testing.B, nsCount, totalPods, nodeCount int, dat
 	}
 }
 
-func runBenchmarkWriteThroughput(ctx context.Context, b *testing.B, store storage.Interface, data BenchmarkData, trafficType string, loadType string, readIndexed bool, tracker *WatchLatencyTracker) {
+func runBenchmarkWriteThroughput(ctx context.Context, b *testing.B, client *clientv3.Client, data BenchmarkData, trafficType string, loadType string, tracker *WatchLatencyTracker) {
 	stopBackgroundLoadCh := make(chan struct{})
 	var workersWg sync.WaitGroup
 	var stopOnce sync.Once
@@ -202,73 +204,38 @@ func runBenchmarkWriteThroughput(ctx context.Context, b *testing.B, store storag
 
 	var writes atomic.Uint64
 	var watchEvents atomic.Uint64
-	var listCalls atomic.Uint64
-	var listObjects atomic.Uint64
 	var index atomic.Uint64
-	var latestRV atomic.Pointer[string]
-	initialRV := "0"
-	latestRV.Store(&initialRV)
+	var latestRV atomic.Int64
 
 	// Determine trackers
 	var writeTracker *WatchLatencyTracker  // Tracker used to record writes (sets annotation)
 	var clientTracker *WatchLatencyTracker // Tracker used by background watchers (client-side latency)
-	startRVStr := ""
 
 	if tracker != nil {
 		writeTracker = tracker
 		if loadType == loadWatcher {
-			// Cacher case with background watchers: we need a separate client tracker
-			clientTracker = NewWatchLatencyTracker(clock.RealClock{})
-			// Reset the clientTracker with current RV
-			rv, _ := store.GetCurrentResourceVersion(ctx)
-			clientTracker.Reset(rv, time.Now())
-			startRVStr = strconv.FormatUint(rv, 10)
+			clientTracker = NewWatchLatencyTracker(RealClock{})
+			rv, _ := getCurrentRevision(ctx, client)
+			clientTracker.Reset(uint64(rv), time.Now())
+			latestRV.Store(rv)
 		}
 	} else if loadType == loadWatcher {
-		// Etcd3 case with background watchers: one tracker does both recording writes and client tracking
-		clientTracker = NewWatchLatencyTracker(clock.RealClock{})
+		clientTracker = NewWatchLatencyTracker(RealClock{})
 		writeTracker = clientTracker
-		// Reset the clientTracker with current RV
-		rv, _ := store.GetCurrentResourceVersion(ctx)
-		clientTracker.Reset(rv, time.Now())
-		startRVStr = strconv.FormatUint(rv, 10)
+		rv, _ := getCurrentRevision(ctx, client)
+		clientTracker.Reset(uint64(rv), time.Now())
+		latestRV.Store(rv)
 	}
 
-	listerCount := 10
-	if countStr := os.Getenv("BENCHMARK_LISTER_COUNT"); countStr != "" {
-		if parsed, err := strconv.Atoi(countStr); err == nil {
-			listerCount = parsed
-		}
-	}
-
-	switch loadType {
-	case loadNone:
-	case loadWatcher:
+	if loadType == loadWatcher {
 		watcherCount := 10
 		if countStr := os.Getenv("BENCHMARK_WATCHER_COUNT"); countStr != "" {
 			if parsed, err := strconv.Atoi(countStr); err == nil {
 				watcherCount = parsed
 			}
 		}
-		startBackgroundWatchers(ctx, store, data, watcherCount, readIndexed, &workersWg, stopBackgroundLoadCh, &watchEvents, clientTracker, startRVStr)
-	case loadLister:
-		startBackgroundListers(ctx, store, data, listerCount, readIndexed, &workersWg, stopBackgroundLoadCh, &listCalls, &listObjects, "", &latestRV)
-	case loadListerExactRV:
-		startBackgroundListers(ctx, store, data, listerCount, readIndexed, &workersWg, stopBackgroundLoadCh, &listCalls, &listObjects, metav1.ResourceVersionMatchExact, &latestRV)
-	case loadListerNotOlderThan:
-		startBackgroundListers(ctx, store, data, listerCount, readIndexed, &workersWg, stopBackgroundLoadCh, &listCalls, &listObjects, metav1.ResourceVersionMatchNotOlderThan, &latestRV)
-	case loadWatchList:
-		startBackgroundWatchListers(ctx, store, data, listerCount, readIndexed, &workersWg, stopBackgroundLoadCh, &listCalls, &listObjects)
-	default:
-		panic(fmt.Sprintf("Unknown load type: %s", loadType))
+		startBackgroundWatchers(ctx, client, data, watcherCount, &workersWg, stopBackgroundLoadCh, &watchEvents, clientTracker, latestRV.Load())
 	}
-	writes.Store(0)
-	watchEvents.Store(0)
-	listCalls.Store(0)
-	listObjects.Store(0)
-
-	etcd3metrics.Register()
-	statsBefore := getEtcdRequestStats()
 
 	var mu sync.Mutex
 	var writeDurations []time.Duration
@@ -277,9 +244,9 @@ func runBenchmarkWriteThroughput(ctx context.Context, b *testing.B, store storag
 	b.RunParallel(func(pb *testing.PB) {
 		var localDurations []time.Duration
 		for pb.Next() {
-			i := int(index.Add(1)) % len(data.PodKeys)
+			i := int(index.Add(1)) % len(data.Keys)
 			start := time.Now()
-			wCount := runTraffic(ctx, b, store, data, trafficType, i, &latestRV, writeTracker)
+			wCount := runTraffic(ctx, b, client, data, trafficType, i, &latestRV, writeTracker)
 			duration := time.Since(start)
 			writes.Add(wCount)
 			if wCount > 0 {
@@ -292,25 +259,20 @@ func runBenchmarkWriteThroughput(ctx context.Context, b *testing.B, store storag
 	})
 	b.StopTimer()
 	elapsedSeconds := b.Elapsed().Seconds()
-	rv := ""
-	if rvPtr := latestRV.Load(); rvPtr != nil {
-		rv = *rvPtr
-	}
-	require.NoError(b, waitForResourceVersion(ctx, store, rv))
-	if rv != "" && rv != "0" {
-		targetRVVal, err := strconv.ParseUint(rv, 10, 64)
-		if err == nil {
-			if clientTracker != nil && (loadType != loadWatcher || !readIndexed) {
-				if err := clientTracker.WaitForResourceVersion(targetRVVal, 30*time.Second); err != nil {
-					b.Fatalf("Timed out waiting for client watchers to consume target RV %d: %v", targetRVVal, err)
-				}
-			} else if tracker != nil {
-				if err := tracker.WaitForResourceVersion(targetRVVal, 30*time.Second); err != nil {
-					b.Fatalf("Timed out waiting for cacher reflector to consume target RV %d: %v", targetRVVal, err)
-				}
+
+	finalRV := latestRV.Load()
+	if finalRV > 0 {
+		if clientTracker != nil {
+			if err := clientTracker.WaitForResourceVersion(uint64(finalRV), 30*time.Second); err != nil {
+				b.Fatalf("Timed out waiting for client watchers to consume target RV %d: %v", finalRV, err)
+			}
+		} else if tracker != nil {
+			if err := tracker.WaitForResourceVersion(uint64(finalRV), 30*time.Second); err != nil {
+				b.Fatalf("Timed out waiting for cacher reflector to consume target RV %d: %v", finalRV, err)
 			}
 		}
 	}
+
 	b.ReportMetric(float64(writes.Load())/elapsedSeconds, "writes/s")
 	if len(writeDurations) > 0 {
 		slices.Sort(writeDurations)
@@ -322,101 +284,21 @@ func runBenchmarkWriteThroughput(ctx context.Context, b *testing.B, store storag
 		b.ReportMetric(p99.Seconds(), "write-latency-p99-s")
 	}
 
-	statsAfter := getEtcdRequestStats()
-
 	stopBackgroundLoad()
 
-	switch loadType {
-	case loadWatcher:
+	if loadType == loadWatcher {
 		b.ReportMetric(float64(watchEvents.Load())/elapsedSeconds, "watch-events/s")
-	case loadLister, loadListerExactRV, loadListerNotOlderThan, loadWatchList:
-		b.ReportMetric(float64(listCalls.Load())/elapsedSeconds, "list-calls/s")
-		b.ReportMetric(float64(listObjects.Load())/elapsedSeconds, "list-objs/s")
 	}
-
-	// Report cacher internal watchCache latency if available
-	if tracker != nil {
-		if p99 := tracker.GetP99Latency(); p99 > 0 {
-			b.ReportMetric(p99.Seconds(), "watch-cache-latency-p99-s")
-		}
-	}
-	// Report client-observed watch latency if available
 	if clientTracker != nil {
 		if p99 := clientTracker.GetP99Latency(); p99 > 0 {
 			b.ReportMetric(p99.Seconds(), "watch-latency-p99-s")
 		}
 	}
-
-	numWrites := writes.Load()
-
-	if numWrites > 0 {
-		creates := statsAfter.create - statsBefore.create
-		deletes := statsAfter.delete - statsBefore.delete
-		updates := statsAfter.update - statsBefore.update
-		gets := statsAfter.get - statsBefore.get
-		totalReqs := creates + deletes + updates + gets
-
-		b.ReportMetric(float64(creates)/float64(numWrites), "etcd-creates/write-cycle")
-		b.ReportMetric(float64(deletes)/float64(numWrites), "etcd-deletes/write-cycle")
-		b.ReportMetric(float64(updates)/float64(numWrites), "etcd-updates/write-cycle")
-		b.ReportMetric(float64(gets)/float64(numWrites), "etcd-gets/write-cycle")
-		b.ReportMetric(float64(totalReqs)/float64(numWrites), "etcd-total-reqs/write-cycle")
-	}
 }
 
-func waitForConsistent(ctx context.Context, store storage.Interface) error {
-	rvVal, err := store.GetCurrentResourceVersion(ctx)
-	if err != nil {
-		return fmt.Errorf("unexpected error getting resource version: %w", err)
-	}
-	rv := strconv.FormatUint(rvVal, 10)
-
-	listOut := &corev1.PodList{}
-	err = store.GetList(ctx, "/pods/", storage.ListOptions{
-		ResourceVersion:      rv,
-		ResourceVersionMatch: metav1.ResourceVersionMatchNotOlderThan,
-		Recursive:            true,
-		Predicate: storage.SelectionPredicate{
-			Label: labels.Everything(),
-			Field: fields.Everything(),
-			Limit: 1,
-		},
-	}, listOut)
-	if err != nil {
-		return fmt.Errorf("unexpected error waiting for consistency: %w", err)
-	}
-	return nil
-}
-
-func waitForResourceVersion(ctx context.Context, store storage.Interface, rv string) error {
-	if rv == "0" || rv == "" {
-		return nil
-	}
-	var err error
-	for range 10 {
-		listOut := &corev1.PodList{}
-		err = store.GetList(ctx, "/pods/", storage.ListOptions{
-			ResourceVersion:      rv,
-			ResourceVersionMatch: metav1.ResourceVersionMatchExact,
-			Recursive:            true,
-			Predicate: storage.SelectionPredicate{
-				Label: labels.Everything(),
-				Field: fields.Everything(),
-				Limit: 1,
-			},
-		}, listOut)
-		if err == nil {
-			return nil
-		}
-		if !strings.Contains(err.Error(), "Too large resource version") {
-			return fmt.Errorf("unexpected error waiting for consistency at rv %s: %w", rv, err)
-		}
-	}
-	return fmt.Errorf("timed out waiting for consistency at rv %s: %w", rv, err)
-}
 
 type WatchLatencyTracker struct {
-	clock                  clock.Clock
+	clock                  Clock
 	mu                     sync.Mutex
 	durations              []time.Duration
 	startResourceVersion   uint64
@@ -424,7 +306,7 @@ type WatchLatencyTracker struct {
 	startTime              time.Time
 }
 
-func NewWatchLatencyTracker(clk clock.Clock) *WatchLatencyTracker {
+func NewWatchLatencyTracker(clk Clock) *WatchLatencyTracker {
 	return &WatchLatencyTracker{
 		clock: clk,
 	}
@@ -474,14 +356,17 @@ func (t *WatchLatencyTracker) HandleEvent(ev *clientv3.Event) {
 }
 
 func (t *WatchLatencyTracker) WaitForResourceVersion(targetRV uint64, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	return wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(ctx context.Context) (bool, error) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
 		t.mu.Lock()
-		defer t.mu.Unlock()
-		return t.highestResourceVersion >= targetRV, nil
-	})
+		reached := t.highestResourceVersion >= targetRV
+		t.mu.Unlock()
+		if reached {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return fmt.Errorf("timed out waiting for resource version %d", targetRV)
 }
 
 func (t *WatchLatencyTracker) GetP99Latency() time.Duration {
@@ -593,53 +478,11 @@ func startBackgroundWatchers(ctx context.Context, client *clientv3.Client, data 
 					for _, ev := range wres.Events {
 						eventCounter.Add(1)
 						if tracker != nil {
-							tracker.HandleEvent(&ev)
+							tracker.HandleEvent(ev)
 						}
 					}
 				}
 			}
 		}()
 	}
-}
-
-
-type etcdStats struct {
-	create uint64
-	delete uint64
-	update uint64
-	get    uint64
-}
-
-func getEtcdRequestStats() etcdStats {
-	stats := etcdStats{}
-	metricFamilies, err := legacyregistry.DefaultGatherer.Gather()
-	if err != nil {
-		return stats
-	}
-	for _, mf := range metricFamilies {
-		if mf.GetName() == "etcd_requests_total" {
-			for _, m := range mf.Metric {
-				var operation string
-				for _, label := range m.Label {
-					if label.GetName() == "operation" {
-						operation = label.GetValue()
-					}
-				}
-				if m.Counter != nil {
-					val := uint64(m.Counter.GetValue())
-					switch operation {
-					case "create":
-						stats.create = val
-					case "delete":
-						stats.delete = val
-					case "update":
-						stats.update = val
-					case "get":
-						stats.get = val
-					}
-				}
-			}
-		}
-	}
-	return stats
 }
