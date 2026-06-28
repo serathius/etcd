@@ -109,25 +109,29 @@ func RunBenchmarkWriteThroughput(ctx context.Context, b *testing.B, store storag
 	}
 }
 
-func PrecreateBenchmarkPods(ctx context.Context, store storage.Interface, data BenchmarkData) error {
-	errCh := make(chan error, len(data.Pods))
+func preseedDatabase(ctx context.Context, client *clientv3.Client, data BenchmarkData) error {
+	errCh := make(chan error, len(data.Keys))
 	var wg sync.WaitGroup
 	limitCh := make(chan struct{}, 20) // limit to 20 concurrent writers
 
-	for _, pod := range data.Pods {
+	for _, key := range data.Keys {
 		wg.Add(1)
-		go func(p *corev1.Pod) {
+		go func(k string) {
 			defer wg.Done()
 			limitCh <- struct{}{}
 			defer func() { <-limitCh }()
 
-			podOut := &corev1.Pod{}
-			key := computeCorev1PodKey(p)
-			err := store.Create(ctx, key, p, podOut, 0)
-			if err != nil && !storage.IsExist(err) {
-				errCh <- fmt.Errorf("unexpected error pre-creating pod %q: %w", key, err)
+			txnResp, err := client.Txn(ctx).If(
+				clientv3.Compare(clientv3.ModRevision(k), "=", 0),
+			).Then(
+				clientv3.OpPut(k, string(data.Val)),
+			).Commit()
+			if err != nil {
+				errCh <- fmt.Errorf("failed to pre-seed key %q: %w", k, err)
+			} else if !txnResp.Succeeded {
+				// Already exists, ignore
 			}
-		}(pod)
+		}(key)
 	}
 
 	wg.Wait()
@@ -491,109 +495,74 @@ func (t *WatchLatencyTracker) GetP99Latency() time.Duration {
 }
 
 
-func runTraffic(ctx context.Context, b *testing.B, store storage.Interface, data BenchmarkData, trafficType string, index int, latestRV *atomic.Pointer[string], tracker *WatchLatencyTracker) (writes uint64) {
-	var podOut *corev1.Pod
-	rvOnly := os.Getenv("BENCHMARK_OPTIMISTIC_RV_ONLY") == "true"
+func runTraffic(ctx context.Context, b *testing.B, client *clientv3.Client, data BenchmarkData, trafficType string, index int, latestRV *atomic.Int64, tracker *WatchLatencyTracker) (writes uint64) {
+	key := data.Keys[index]
 	switch trafficType {
 	case trafficDeleteCreate:
-		var cachedObj runtime.Object
-		if len(data.PodResourceVersions) > 0 {
-			if rvPtr := data.PodResourceVersions[index].Load(); rvPtr != nil && *rvPtr != "" && *rvPtr != "0" {
-				if rvOnly {
-					cachedObj = &corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:            data.Pods[index].Name,
-							Namespace:       data.Pods[index].Namespace,
-							ResourceVersion: *rvPtr,
-						},
-					}
-				} else {
-					pod := data.Pods[index].DeepCopy()
-					pod.ResourceVersion = *rvPtr
-					cachedObj = pod
-				}
-			}
-		}
-		podOut = &corev1.Pod{}
-		err := store.Delete(ctx, data.PodKeys[index], podOut, nil, storage.ValidateAllObjectFunc, cachedObj, storage.DeleteOptions{})
-		if err == nil {
-			writes += 1
-		} else if !storage.IsNotFound(err) {
-			panic(fmt.Sprintf("Unexpected error on Delete %q: %v", data.PodKeys[index], err))
-		}
-		var pod *corev1.Pod
-		if rvOnly {
-			pod = &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      data.Pods[index].Name,
-					Namespace: data.Pods[index].Namespace,
-				},
-			}
-		} else {
-			pod = data.Pods[index].DeepCopy()
-		}
-		if tracker != nil {
-			tracker.RecordWrite(pod)
-		}
-		podOut = &corev1.Pod{}
-		err = store.Create(ctx, data.PodKeys[index], pod, podOut, 0)
-		if err == nil {
-			writes += 1
-			latestRV.Store(&podOut.ResourceVersion)
-			if len(data.PodResourceVersions) > 0 {
-				data.PodResourceVersions[index].Store(&podOut.ResourceVersion)
-			}
-		} else if !storage.IsExist(err) {
-			panic(fmt.Sprintf("Unexpected error on Create %q: %v", data.PodKeys[index], err))
-		}
-	case trafficPatch:
-		var cachedObj runtime.Object
-		if len(data.PodResourceVersions) > 0 {
-			if rvPtr := data.PodResourceVersions[index].Load(); rvPtr != nil && *rvPtr != "" && *rvPtr != "0" {
-				if rvOnly {
-					cachedObj = &corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:            data.Pods[index].Name,
-							Namespace:       data.Pods[index].Namespace,
-							ResourceVersion: *rvPtr,
-						},
-					}
-				} else {
-					pod := data.Pods[index].DeepCopy()
-					pod.ResourceVersion = *rvPtr
-					cachedObj = pod
-				}
-			}
-		}
-		podOut = &corev1.Pod{}
-		err := store.GuaranteedUpdate(ctx, data.PodKeys[index], podOut, false, nil, patchFunc(index, tracker), cachedObj)
+		expectedRev := data.Revisions[index].Load()
+		txnDelete := client.Txn(ctx).If(
+			clientv3.Compare(clientv3.ModRevision(key), "=", expectedRev),
+		).Then(
+			clientv3.OpDelete(key),
+		)
+		txnResp, err := txnDelete.Commit()
 		if err != nil {
-			panic(fmt.Sprintf("Unexpected error on Patch %q: %v", data.PodKeys[index], err))
-		} else {
-			writes += 1
-			latestRV.Store(&podOut.ResourceVersion)
-			if len(data.PodResourceVersions) > 0 {
-				data.PodResourceVersions[index].Store(&podOut.ResourceVersion)
-			}
+			panic(fmt.Sprintf("Unexpected error on Delete %q: %v", key, err))
 		}
+		if txnResp.Succeeded {
+			writes++
+		}
+
+		valCopy := make([]byte, len(data.Val))
+		copy(valCopy, data.Val)
+		if tracker != nil {
+			tracker.RecordWrite(valCopy)
+		}
+		txnCreate := client.Txn(ctx).If(
+			clientv3.Compare(clientv3.ModRevision(key), "=", 0),
+		).Then(
+			clientv3.OpPut(key, string(valCopy)),
+		)
+		txnResp, err = txnCreate.Commit()
+		if err != nil {
+			panic(fmt.Sprintf("Unexpected error on Create %q: %v", key, err))
+		}
+		if txnResp.Succeeded {
+			writes++
+			latestRV.Store(txnResp.Header.Revision)
+			data.Revisions[index].Store(txnResp.Header.Revision)
+		} else {
+			panic(fmt.Sprintf("Create transaction failed for key %q (already exists)", key))
+		}
+
+	case trafficPatch:
+		expectedRev := data.Revisions[index].Load()
+		valCopy := make([]byte, len(data.Val))
+		copy(valCopy, data.Val)
+		if tracker != nil {
+			tracker.RecordWrite(valCopy)
+		}
+		txn := client.Txn(ctx).If(
+			clientv3.Compare(clientv3.ModRevision(key), "=", expectedRev),
+		).Then(
+			clientv3.OpPut(key, string(valCopy)),
+		)
+		txnResp, err := txn.Commit()
+		if err != nil {
+			panic(fmt.Sprintf("Unexpected error on Patch %q: %v", key, err))
+		}
+		if txnResp.Succeeded {
+			writes++
+			latestRV.Store(txnResp.Header.Revision)
+			data.Revisions[index].Store(txnResp.Header.Revision)
+		} else {
+			panic(fmt.Sprintf("Patch transaction failed for key %q (revision mismatch: expected %d)", key, expectedRev))
+		}
+
 	default:
 		panic(fmt.Sprintf("Unknown traffic type: %s", trafficType))
 	}
 	return writes
-}
-
-func patchFunc(i int, tracker *WatchLatencyTracker) func(input runtime.Object, res storage.ResponseMeta) (runtime.Object, *uint64, error) {
-	return func(input runtime.Object, res storage.ResponseMeta) (runtime.Object, *uint64, error) {
-		curr := input.(*corev1.Pod)
-		if curr.Annotations == nil {
-			curr.Annotations = make(map[string]string)
-		}
-		curr.Annotations["updated-by-benchmark"] = strconv.FormatUint(globalUpdateCounter.Add(1), 10)
-		if tracker != nil {
-			tracker.RecordWrite(curr)
-		}
-		return curr, nil, nil
-	}
 }
 
 func startBackgroundWatchers(ctx context.Context, store storage.Interface, data BenchmarkData, count int, readIndexed bool, wg *sync.WaitGroup, stopCh <-chan struct{}, eventCounter *atomic.Uint64, tracker *WatchLatencyTracker, resourceVersion string) {
