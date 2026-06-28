@@ -506,6 +506,24 @@ func PrepareBenchmarkData(nsCount, podPerNs int, payloadSize int) BenchmarkData 
 	}
 }
 
+func PopulateInitialRevisions(ctx context.Context, client *clientv3.Client, data *BenchmarkData) error {
+	resp, err := client.KV.Get(ctx, "/pods/", clientv3.WithPrefix())
+	if err != nil {
+		return err
+	}
+	keyToIndex := make(map[string]int, len(data.Keys))
+	for idx, key := range data.Keys {
+		keyToIndex[key] = idx
+	}
+	for _, kv := range resp.Kvs {
+		key := string(kv.Key)
+		if idx, ok := keyToIndex[key]; ok {
+			data.Revisions[idx].Store(kv.ModRevision)
+		}
+	}
+	return nil
+}
+
 func BenchmarkWriteThroughput(b *testing.B) {
 	e2e.SkipInShortMode(b)
 
@@ -564,6 +582,10 @@ func BenchmarkWriteThroughput(b *testing.B) {
 		b.Fatal(err)
 	}
 	b.Logf("Validated database state: total keys under /pods/ prefix = %d", resp.Count)
+
+	if err := PopulateInitialRevisions(ctx, client, &data); err != nil {
+		b.Fatal(err)
+	}
 
 	compactFn := func(ctx context.Context, rv int64) error {
 		_, err := client.Compact(ctx, rv, clientv3.WithCompactPhysical())
