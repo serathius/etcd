@@ -19,9 +19,6 @@ import (
 	"go.etcd.io/etcd/tests/v3/framework/e2e"
 )
 
-// ==========================================
-// 1. High-Level Benchmark Suite Entry Point
-// ==========================================
 
 func BenchmarkWriteThroughput(b *testing.B) {
 	e2e.SkipInShortMode(b)
@@ -57,9 +54,6 @@ func BenchmarkWriteThroughput(b *testing.B) {
 	RunBenchmarkWriteThroughput(ctx, b, client, data, nil, true)
 }
 
-// ==========================================
-// 2. Direct Dependencies of BenchmarkWriteThroughput
-// ==========================================
 
 func PrepareBenchmarkData(nsCount, podPerNs int, payloadSize int) BenchmarkData {
 	totalKeys := nsCount * podPerNs
@@ -241,9 +235,6 @@ func RunBenchmarkWriteThroughput(ctx context.Context, b *testing.B, client *clie
 	}
 }
 
-// ==========================================
-// 3. Direct Dependencies of RunBenchmarkWriteThroughput
-// ==========================================
 
 func preseedDatabase(ctx context.Context, client *clientv3.Client, data BenchmarkData) error {
 	errCh := make(chan error, len(data.Keys))
@@ -394,9 +385,6 @@ func runBenchmarkWriteThroughput(ctx context.Context, b *testing.B, client *clie
 	}
 }
 
-// ==========================================
-// 4. Direct Dependencies of runBenchmarkWriteThroughput
-// ==========================================
 
 func startBackgroundWatchers(ctx context.Context, client *clientv3.Client, data BenchmarkData, count int, wg *sync.WaitGroup, stopCh <-chan struct{}, eventCounter *atomic.Uint64, tracker *WatchLatencyTracker, resourceVersion int64) {
 	for i := 0; i < count; i++ {
@@ -589,9 +577,6 @@ func runTraffic(ctx context.Context, b *testing.B, client *clientv3.Client, data
 	return writes
 }
 
-// ==========================================
-// 5. Lower-Level Auxiliary Structs & Common Interfaces
-// ==========================================
 
 type BenchmarkData struct {
 	Keys      []string
