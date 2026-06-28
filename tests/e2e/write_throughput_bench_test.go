@@ -123,7 +123,6 @@ func createStore(tb testing.TB, dataDir string) (*clientv3.Client, storeCleanup)
 		e2e.WithLogLevel("warn"),
 		e2e.WithDataDirPath(dataDir),
 		e2e.WithKeepDataDir(true),
-		e2e.WithBasePort(getNextBasePort()),
 		e2e.EPClusterOption(func(cfg *e2e.EtcdProcessClusterConfig) {
 			cfg.ServerConfig.BackendBatchInterval = time.Second
 		}),
@@ -154,14 +153,6 @@ func (c storeCleanup) Close() {
 	c.epc.Close()
 }
 
-var basePortCounter = atomic.Int64{}
-
-func getNextBasePort() int {
-	if basePortCounter.Load() == 0 {
-		basePortCounter.CompareAndSwap(0, 25000)
-	}
-	return int(basePortCounter.Add(10))
-}
 
 func PopulateInitialRevisions(ctx context.Context, client *clientv3.Client, data *BenchmarkData) error {
 	resp, err := client.KV.Get(ctx, "/pods/", clientv3.WithPrefix())
