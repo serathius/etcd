@@ -87,16 +87,13 @@ func SetupPreseededDatabase(b *testing.B, nsCount, totalPods, nodeCount int, dat
 			b.Fatalf("failed to unarchive pre-seeded database: %v", err)
 		}
 		isPreseeded = true
-		os.Setenv("ETCD_DATA_PRESEEDED", "true")
 	} else {
 		dataDir = b.TempDir()
-		os.Setenv("ETCD_DATA_PRESEEDED", "false")
 	}
 	os.Setenv("BENCHMARK_ETCD_DATA_DIR", dataDir)
 
 	b.Cleanup(func() {
 		os.Unsetenv("BENCHMARK_ETCD_DATA_DIR")
-		os.Unsetenv("ETCD_DATA_PRESEEDED")
 	})
 
 	if !isPreseeded {
@@ -113,7 +110,6 @@ func SetupPreseededDatabase(b *testing.B, nsCount, totalPods, nodeCount int, dat
 		if out, err := cmd.CombinedOutput(); err != nil {
 			b.Fatalf("failed to archive database: %v. Output: %s", err, string(out))
 		}
-		os.Setenv("ETCD_DATA_PRESEEDED", "true")
 	}
 }
 
