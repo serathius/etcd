@@ -1056,6 +1056,7 @@ func (s *EtcdServer) doSerialize(ctx context.Context, chk func(*auth.AuthInfo) e
 }
 
 func (s *EtcdServer) processInternalRaftRequestOnce(ctx context.Context, r *pb.InternalRaftRequest) (*apply2.Result, error) {
+	InjectCausalDelay("proposal")
 	ai := s.getAppliedIndex()
 	ci := s.getCommittedIndex()
 

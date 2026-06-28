@@ -352,6 +352,7 @@ func (t *batchTxBuffered) CommitAndStop() {
 }
 
 func (t *batchTxBuffered) commit(stop bool) {
+	InjectCausalDelay("commit")
 	// all read txs must be closed to acquire boltdb commit rwlock
 	t.backend.readTx.Lock()
 	t.unsafeCommit(stop)
