@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"path/filepath"
+
 	"go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/tests/v3/framework/e2e"
 )
@@ -74,7 +76,7 @@ func PrepareBenchmarkData(nsCount, podPerNs int, payloadSize int) BenchmarkData 
 }
 
 func SetupPreseededDatabase(b *testing.B, nsCount, totalPods, nodeCount int, data BenchmarkData) {
-	archivePath := fmt.Sprintf("/tmp/etcd_db_%d_%d_%d.tar.gz", nsCount, totalPods, nodeCount)
+	archivePath := filepath.Join(os.TempDir(), fmt.Sprintf("etcd_db_%d_%d_%d.tar.gz", nsCount, totalPods, nodeCount))
 
 	var dataDir string
 	var isPreseeded bool
