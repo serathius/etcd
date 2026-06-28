@@ -15,6 +15,8 @@
 package wal
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -58,7 +60,15 @@ func BenchmarkWrite10KEntryK8sDistribution(b *testing.B) {
 }
 
 func benchmarkWriteEntry(b *testing.B, size int, batchSamples []int) {
-	p := b.TempDir()
+	p := os.Getenv("WAL_BENCH_DIR")
+	if p == "" {
+		p = b.TempDir()
+	} else {
+		p = filepath.Join(p, b.Name())
+		err := os.MkdirAll(p, 0777)
+		require.NoError(b, err)
+		defer os.RemoveAll(p)
+	}
 
 	w, err := Create(zaptest.NewLogger(b), p, []byte("somedata"))
 	require.NoErrorf(b, err, "err = %v, want nil", err)
