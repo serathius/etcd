@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -79,6 +80,26 @@ type store struct {
 
 	lg     *zap.Logger
 	hashes HashStorage
+
+	kvCache atomic.Pointer[shardedCache]
+}
+
+type shardedCache struct {
+	shards [32]sync.Map
+}
+
+func (c *shardedCache) Store(rev Revision, kv *mvccpb.KeyValue) {
+	shardIdx := rev.Main % 32
+	c.shards[shardIdx].Store(rev, kv)
+}
+
+func (c *shardedCache) Load(rev Revision) (*mvccpb.KeyValue, bool) {
+	shardIdx := rev.Main % 32
+	val, ok := c.shards[shardIdx].Load(rev)
+	if !ok {
+		return nil, false
+	}
+	return val.(*mvccpb.KeyValue), true
 }
 
 // NewStore returns a new store. It is useful to create a store inside
@@ -110,6 +131,7 @@ func NewStore(lg *zap.Logger, b backend.Backend, le lease.Lessor, cfg StoreConfi
 
 		lg: lg,
 	}
+	s.kvCache.Store(&shardedCache{})
 	s.hashes = NewHashStorage(lg, s)
 	s.ReadView = &readView{s}
 	s.WriteView = &writeView{s}
@@ -279,6 +301,8 @@ func (s *store) Compact(trace *traceutil.Trace, rev int64) (<-chan struct{}, err
 		return ch, err
 	}
 	s.mu.Unlock()
+
+	s.kvCache.Store(&shardedCache{})
 
 	return s.compact(trace, rev, prevCompactRev, prevCompactionCompleted), nil
 }

@@ -115,11 +115,22 @@ func (tr *storeTxnCommon) rangeKeys(ctx context.Context, key, end []byte, curRev
 
 	kvs := make([]*mvccpb.KeyValue, cappedEntriesCount)
 	revBytes := NewRevBytes()
+	cache := tr.s.kvCache.Load()
 	for i, revpair := range revpairs[:len(kvs)] {
 		select {
 		case <-ctx.Done():
 			return nil, fmt.Errorf("rangeKeys: context cancelled: %w", ctx.Err())
 		default:
+		}
+
+		var cached *mvccpb.KeyValue
+		var ok bool
+		if cache != nil {
+			cached, ok = cache.Load(revpair)
+		}
+		if ok {
+			kvs[i] = cached
+			continue
 		}
 
 		revBytes = RevToBytes(revpair, revBytes)
@@ -146,6 +157,10 @@ func (tr *storeTxnCommon) rangeKeys(ctx context.Context, key, end []byte, curRev
 			)
 		}
 		kvs[i] = kv
+
+		if cache != nil {
+			cache.Store(revpair, kv)
+		}
 	}
 	tr.trace.Step("range keys from bolt db")
 	return &RangeResult{KVs: kvs, Count: total, Rev: curRev}, nil
@@ -259,6 +274,10 @@ func (tw *storeTxnWrite) put(key, value []byte, leaseID lease.LeaseID) {
 	tw.tx.UnsafeSeqPut(schema.Key, ibytes, d)
 	tw.s.kvindex.Put(key, idxRev)
 	tw.changes = append(tw.changes, kv)
+	cache := tw.s.kvCache.Load()
+	if cache != nil {
+		cache.Store(idxRev, kv)
+	}
 	tw.trace.Step("store kv pair into bolt db")
 
 	if oldLease == leaseID {
@@ -330,6 +349,10 @@ func (tw *storeTxnWrite) delete(key []byte) {
 		)
 	}
 	tw.changes = append(tw.changes, kv)
+	cache := tw.s.kvCache.Load()
+	if cache != nil {
+		cache.Store(idxRev.Revision, kv)
+	}
 
 	item := lease.LeaseItem{Key: string(key)}
 	leaseID := tw.s.le.GetLease(item)
