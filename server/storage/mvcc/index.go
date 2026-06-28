@@ -36,6 +36,23 @@ type index interface {
 	KeyIndex(ki *keyIndex) *keyIndex
 }
 
+var keyIndexPool = sync.Pool{
+	New: func() any {
+		return &keyIndex{}
+	},
+}
+
+func getSearchKey(key []byte) *keyIndex {
+	ki := keyIndexPool.Get().(*keyIndex)
+	ki.key = key
+	return ki
+}
+
+func putSearchKey(ki *keyIndex) {
+	ki.key = nil
+	keyIndexPool.Put(ki)
+}
+
 type treeIndex struct {
 	sync.RWMutex
 	tree *btree.BTree[*keyIndex]
@@ -52,16 +69,19 @@ func newTreeIndex(lg *zap.Logger) index {
 }
 
 func (ti *treeIndex) Put(key []byte, rev Revision) {
-	keyi := &keyIndex{key: key}
-
 	ti.Lock()
 	defer ti.Unlock()
+
+	keyi := getSearchKey(key)
 	okeyi, ok := ti.tree.Get(keyi)
 	if !ok {
-		keyi.put(ti.lg, rev.Main, rev.Sub)
-		ti.tree.ReplaceOrInsert(keyi)
+		realKeyi := &keyIndex{key: key}
+		realKeyi.put(ti.lg, rev.Main, rev.Sub)
+		ti.tree.ReplaceOrInsert(realKeyi)
+		putSearchKey(keyi)
 		return
 	}
+	putSearchKey(keyi)
 	okeyi.put(ti.lg, rev.Main, rev.Sub)
 }
 
@@ -72,11 +92,13 @@ func (ti *treeIndex) Get(key []byte, atRev int64) (modified, created Revision, v
 }
 
 func (ti *treeIndex) unsafeGet(key []byte, atRev int64) (modified, created Revision, ver int64, err error) {
-	keyi := &keyIndex{key: key}
-	if keyi = ti.keyIndex(keyi); keyi == nil {
+	keyi := getSearchKey(key)
+	defer putSearchKey(keyi)
+	ki := ti.keyIndex(keyi)
+	if ki == nil {
 		return Revision{}, Revision{}, 0, ErrRevisionNotFound
 	}
-	return keyi.get(ti.lg, atRev)
+	return ki.get(ti.lg, atRev)
 }
 
 func (ti *treeIndex) KeyIndex(keyi *keyIndex) *keyIndex {
@@ -93,10 +115,17 @@ func (ti *treeIndex) keyIndex(keyi *keyIndex) *keyIndex {
 }
 
 func (ti *treeIndex) unsafeVisit(key, end []byte, f func(ki *keyIndex) bool) {
-	keyi, endi := &keyIndex{key: key}, &keyIndex{key: end}
+	keyi := getSearchKey(key)
+	defer putSearchKey(keyi)
+
+	var endi *keyIndex
+	if len(end) > 0 {
+		endi = getSearchKey(end)
+		defer putSearchKey(endi)
+	}
 
 	ti.tree.AscendGreaterOrEqual(keyi, func(item *keyIndex) bool {
-		if len(endi.key) > 0 && !item.Less(endi) {
+		if endi != nil && !item.Less(endi) {
 			return false
 		}
 		if !f(item) {
@@ -190,10 +219,11 @@ func (ti *treeIndex) Range(key, end []byte, atRev int64, limit int, withTotalCou
 }
 
 func (ti *treeIndex) Tombstone(key []byte, rev Revision) error {
-	keyi := &keyIndex{key: key}
-
 	ti.Lock()
 	defer ti.Unlock()
+
+	keyi := getSearchKey(key)
+	defer putSearchKey(keyi)
 	ki, ok := ti.tree.Get(keyi)
 	if !ok {
 		return ErrRevisionNotFound
