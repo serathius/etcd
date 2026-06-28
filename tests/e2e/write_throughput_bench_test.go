@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"encoding/binary"
 	"context"
 	"fmt"
 	"os"
@@ -37,6 +38,13 @@ const (
 	loadListerNotOlderThan = "ListerNotOlderThan"
 	loadWatchList       = "WatchList"
 )
+
+type BenchmarkData struct {
+	Keys      []string
+	Val       []byte
+	Revisions []atomic.Int64
+}
+
 
 func RunBenchmarkWriteThroughput(ctx context.Context, b *testing.B, store storage.Interface, data BenchmarkData, hasIndex bool, tracker *WatchLatencyTracker, compactFn func(context.Context, uint64) error) {
 	if os.Getenv("ETCD_DATA_PRESEEDED") != "true" {
@@ -402,8 +410,6 @@ func waitForResourceVersion(ctx context.Context, store storage.Interface, rv str
 	return fmt.Errorf("timed out waiting for consistency at rv %s: %w", rv, err)
 }
 
-const latencyTimestampAnnotation = "watch-latency-timestamp"
-
 type WatchLatencyTracker struct {
 	clock                  clock.Clock
 	mu                     sync.Mutex
@@ -428,56 +434,33 @@ func (t *WatchLatencyTracker) Reset(rv uint64, startTime time.Time) {
 	t.startTime = startTime
 }
 
-func (t *WatchLatencyTracker) RecordWrite(obj interface{}) {
-	metaObj, ok := obj.(metav1.Object)
-	if !ok {
-		return
+func (t *WatchLatencyTracker) RecordWrite(payload []byte) {
+	if len(payload) >= 8 {
+		binary.BigEndian.PutUint64(payload[0:8], uint64(t.clock.Now().UnixNano()))
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	annotations := metaObj.GetAnnotations()
-	if annotations == nil {
-		annotations = make(map[string]string)
-	}
-	annotations[latencyTimestampAnnotation] = serializeTimestamp(t.clock.Now())
-	metaObj.SetAnnotations(annotations)
 }
 
-func (t *WatchLatencyTracker) HandleEvent(eventType watch.EventType, obj interface{}) {
-	metaObj, ok := obj.(metav1.Object)
-	if !ok {
+func (t *WatchLatencyTracker) HandleEvent(ev *clientv3.Event) {
+	if ev.Type == clientv3.EventTypeDelete {
 		return
 	}
-	rv, err := strconv.ParseUint(metaObj.GetResourceVersion(), 10, 64)
-	if err != nil {
-		panic(fmt.Sprintf("Failed to parse RV %q: %v", metaObj.GetResourceVersion(), err))
-	}
+	rv := ev.Kv.ModRevision
 	t.mu.Lock()
-	if rv > t.highestResourceVersion {
-		t.highestResourceVersion = rv
+	if uint64(rv) > t.highestResourceVersion {
+		t.highestResourceVersion = uint64(rv)
 	}
 	t.mu.Unlock()
 
-	if eventType == watch.Deleted || eventType == watch.Error || eventType == watch.Bookmark {
-		return
-	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if rv < t.startResourceVersion {
+	if uint64(rv) < t.startResourceVersion {
 		return
 	}
-	annotations := metaObj.GetAnnotations()
-	if annotations == nil {
-		panic(fmt.Sprintf("Annotations nil for obj %s/%s", metaObj.GetNamespace(), metaObj.GetName()))
+	if len(ev.Kv.Value) < 8 {
+		return
 	}
-	tStr, ok := annotations[latencyTimestampAnnotation]
-	if !ok {
-		panic(fmt.Sprintf("Latency annotation missing for obj %s/%s, annotations: %v", metaObj.GetNamespace(), metaObj.GetName(), annotations))
-	}
-	writeTime, err := parseTimestamp(tStr)
-	if err != nil {
-		panic(fmt.Sprintf("Failed to parse timestamp %q: %v", tStr, err))
-	}
+	tNano := binary.BigEndian.Uint64(ev.Kv.Value[0:8])
+	writeTime := time.Unix(0, int64(tNano))
 	if writeTime.Before(t.startTime) {
 		return
 	}
@@ -507,17 +490,6 @@ func (t *WatchLatencyTracker) GetP99Latency() time.Duration {
 	return t.durations[idx]
 }
 
-func serializeTimestamp(t time.Time) string {
-	return strconv.FormatInt(t.UnixNano(), 10)
-}
-
-func parseTimestamp(s string) (time.Time, error) {
-	tNano, err := strconv.ParseInt(s, 10, 64)
-	if err != nil {
-		return time.Time{}, err
-	}
-	return time.Unix(0, tNano), nil
-}
 
 func runTraffic(ctx context.Context, b *testing.B, store storage.Interface, data BenchmarkData, trafficType string, index int, latestRV *atomic.Pointer[string], tracker *WatchLatencyTracker) (writes uint64) {
 	var podOut *corev1.Pod
