@@ -932,6 +932,7 @@ func newFakeStore(lg *zap.Logger) *store {
 		stopc:          make(chan struct{}),
 		lg:             lg,
 	}
+	s.kvCache.Store(&shardedCache{})
 	s.ReadView, s.WriteView = &readView{s}, &writeView{s}
 	s.hashes = NewHashStorage(lg, s)
 	return s
