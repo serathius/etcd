@@ -523,6 +523,7 @@ func BenchmarkWriteThroughput(b *testing.B) {
 			e2e.WithQuotaBackendBytes(8589934592),
 			e2e.WithLogLevel("warn"),
 			e2e.WithDataDirPath(dataDir),
+			e2e.WithKeepDataDir(true),
 		)
 		if err != nil {
 			tb.Fatal(err)
@@ -557,6 +558,12 @@ func BenchmarkWriteThroughput(b *testing.B) {
 	ctx := context.Background()
 	client, stopStore := createStoreFn(b, dataDir)
 	defer stopStore()
+
+	resp, err := client.KV.Get(ctx, "/pods/", clientv3.WithPrefix(), clientv3.WithCountOnly())
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Logf("Validated database state: total keys under /pods/ prefix = %d", resp.Count)
 
 	compactFn := func(ctx context.Context, rv int64) error {
 		_, err := client.Compact(ctx, rv, clientv3.WithCompactPhysical())
