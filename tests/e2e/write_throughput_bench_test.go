@@ -19,17 +19,10 @@ import (
 	"go.etcd.io/etcd/tests/v3/framework/e2e"
 )
 
-type storeCleanup struct {
-	client *clientv3.Client
-	epc    *e2e.EtcdProcessCluster
-}
+// ==========================================
+// 1. High-Level Benchmark Suite Entry Point
+// ==========================================
 
-func (c storeCleanup) Close() {
-	c.client.Close()
-	c.epc.Close()
-}
-
-// 1. High-Level Benchmark Entry Point
 func BenchmarkWriteThroughput(b *testing.B) {
 	e2e.SkipInShortMode(b)
 
@@ -64,32 +57,9 @@ func BenchmarkWriteThroughput(b *testing.B) {
 	RunBenchmarkWriteThroughput(ctx, b, client, data, nil, true)
 }
 
+// ==========================================
 // 2. Direct Dependencies of BenchmarkWriteThroughput
-func createStore(tb testing.TB, dataDir string) (*clientv3.Client, storeCleanup) {
-	ctx := context.Background()
-	epc, err := e2e.NewEtcdProcessCluster(ctx, tb,
-		e2e.WithClusterSize(1),
-		e2e.WithQuotaBackendBytes(8589934592),
-		e2e.WithLogLevel("warn"),
-		e2e.WithDataDirPath(dataDir),
-		e2e.WithKeepDataDir(true),
-		e2e.WithBasePort(getNextBasePort()),
-	)
-	if err != nil {
-		tb.Fatal(err)
-	}
-
-	cfg := clientv3.Config{
-		Endpoints:   epc.EndpointsGRPC(),
-		DialTimeout: 5 * time.Second,
-	}
-	client, err := clientv3.New(cfg)
-	if err != nil {
-		tb.Fatal(err)
-	}
-
-	return client, storeCleanup{client: client, epc: epc}
-}
+// ==========================================
 
 func PrepareBenchmarkData(nsCount, podPerNs int, payloadSize int) BenchmarkData {
 	totalKeys := nsCount * podPerNs
@@ -149,6 +119,42 @@ func SetupPreseededDatabase(b *testing.B, nsCount, totalPods, nodeCount int, dat
 		}
 		os.Setenv("ETCD_DATA_PRESEEDED", "true")
 	}
+}
+
+func createStore(tb testing.TB, dataDir string) (*clientv3.Client, storeCleanup) {
+	ctx := context.Background()
+	epc, err := e2e.NewEtcdProcessCluster(ctx, tb,
+		e2e.WithClusterSize(1),
+		e2e.WithQuotaBackendBytes(8589934592),
+		e2e.WithLogLevel("warn"),
+		e2e.WithDataDirPath(dataDir),
+		e2e.WithKeepDataDir(true),
+		e2e.WithBasePort(getNextBasePort()),
+	)
+	if err != nil {
+		tb.Fatal(err)
+	}
+
+	cfg := clientv3.Config{
+		Endpoints:   epc.EndpointsGRPC(),
+		DialTimeout: 5 * time.Second,
+	}
+	client, err := clientv3.New(cfg)
+	if err != nil {
+		tb.Fatal(err)
+	}
+
+	return client, storeCleanup{client: client, epc: epc}
+}
+
+type storeCleanup struct {
+	client *clientv3.Client
+	epc    *e2e.EtcdProcessCluster
+}
+
+func (c storeCleanup) Close() {
+	c.client.Close()
+	c.epc.Close()
 }
 
 var basePortCounter = atomic.Int64{}
@@ -235,7 +241,10 @@ func RunBenchmarkWriteThroughput(ctx context.Context, b *testing.B, client *clie
 	}
 }
 
+// ==========================================
 // 3. Direct Dependencies of RunBenchmarkWriteThroughput
+// ==========================================
+
 func preseedDatabase(ctx context.Context, client *clientv3.Client, data BenchmarkData) error {
 	errCh := make(chan error, len(data.Keys))
 	var wg sync.WaitGroup
@@ -385,7 +394,10 @@ func runBenchmarkWriteThroughput(ctx context.Context, b *testing.B, client *clie
 	}
 }
 
+// ==========================================
 // 4. Direct Dependencies of runBenchmarkWriteThroughput
+// ==========================================
+
 func startBackgroundWatchers(ctx context.Context, client *clientv3.Client, data BenchmarkData, count int, wg *sync.WaitGroup, stopCh <-chan struct{}, eventCounter *atomic.Uint64, tracker *WatchLatencyTracker, resourceVersion int64) {
 	for i := 0; i < count; i++ {
 		wg.Add(1)
@@ -577,7 +589,10 @@ func runTraffic(ctx context.Context, b *testing.B, client *clientv3.Client, data
 	return writes
 }
 
+// ==========================================
 // 5. Lower-Level Auxiliary Structs & Common Interfaces
+// ==========================================
+
 type BenchmarkData struct {
 	Keys      []string
 	Val       []byte
