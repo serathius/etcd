@@ -15,8 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"math/rand"
-
 	"go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/tests/v3/framework/e2e"
 )
@@ -160,8 +158,7 @@ var basePortCounter = atomic.Int64{}
 
 func getNextBasePort() int {
 	if basePortCounter.Load() == 0 {
-		// Use a random offset between 20000 and 30000
-		basePortCounter.CompareAndSwap(0, int64(20000+rand.Intn(10000)))
+		basePortCounter.CompareAndSwap(0, 25000)
 	}
 	return int(basePortCounter.Add(10))
 }
