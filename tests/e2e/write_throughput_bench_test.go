@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/tests/v3/framework/e2e"
 )
 
 type Clock interface {
@@ -486,3 +487,82 @@ func startBackgroundWatchers(ctx context.Context, client *clientv3.Client, data 
 		}()
 	}
 }
+
+func PrepareBenchmarkData(nsCount, podPerNs int, payloadSize int) BenchmarkData {
+	totalKeys := nsCount * podPerNs
+	keys := make([]string, 0, totalKeys)
+	for i := 0; i < nsCount; i++ {
+		ns := fmt.Sprintf("ns-%d", i)
+		for j := 0; j < podPerNs; j++ {
+			keys = append(keys, fmt.Sprintf("/pods/%s/pod-%d", ns, j))
+		}
+	}
+	val := make([]byte, payloadSize)
+	revisions := make([]atomic.Int64, totalKeys)
+	return BenchmarkData{
+		Keys:      keys,
+		Val:       val,
+		Revisions: revisions,
+	}
+}
+
+func BenchmarkWriteThroughput(b *testing.B) {
+	e2e.SkipInShortMode(b)
+
+	nsCount := 50
+	podPerNs := 3000
+	payloadSize := 10145
+	nodeCount := 5000 // matching dims for SetupPreseededDatabase name hashing
+	totalPods := nsCount * podPerNs
+	data := PrepareBenchmarkData(nsCount, podPerNs, payloadSize)
+
+	createStoreFn := func(tb testing.TB, dataDir string) (*clientv3.Client, func()) {
+		ctx := context.Background()
+		epc, err := e2e.NewEtcdProcessCluster(ctx, tb,
+			e2e.WithClusterSize(1),
+			e2e.WithQuotaBackendBytes(8589934592),
+			e2e.WithLogLevel("warn"),
+			e2e.WithDataDirPath(dataDir),
+		)
+		if err != nil {
+			tb.Fatal(err)
+		}
+
+		cfg := clientv3.Config{
+			Endpoints:   epc.EndpointsGRPC(),
+			DialTimeout: 5 * time.Second,
+		}
+		client, err := clientv3.New(cfg)
+		if err != nil {
+			tb.Fatal(err)
+		}
+
+		return client, func() {
+			client.Close()
+			epc.Close()
+		}
+	}
+
+	seedFn := func(ctx context.Context, client *clientv3.Client) error {
+		return preseedDatabase(ctx, client, data)
+	}
+
+	SetupPreseededDatabase(b, nsCount, totalPods, nodeCount, data, seedFn, createStoreFn)
+
+	dataDir := os.Getenv("BENCHMARK_ETCD_DATA_DIR")
+	if dataDir == "" {
+		b.Fatal("BENCHMARK_ETCD_DATA_DIR not set after SetupPreseededDatabase")
+	}
+
+	ctx := context.Background()
+	client, stopStore := createStoreFn(b, dataDir)
+	defer stopStore()
+
+	compactFn := func(ctx context.Context, rv int64) error {
+		_, err := client.Compact(ctx, rv, clientv3.WithCompactPhysical())
+		return err
+	}
+
+	RunBenchmarkWriteThroughput(ctx, b, client, data, nil, compactFn)
+}
+
