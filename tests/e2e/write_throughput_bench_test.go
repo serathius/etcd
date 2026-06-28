@@ -127,6 +127,9 @@ func createStore(tb testing.TB, dataDir string) (*clientv3.Client, storeCleanup)
 		e2e.WithKeepDataDir(true),
 		e2e.EPClusterOption(func(cfg *e2e.EtcdProcessClusterConfig) {
 			cfg.ServerConfig.BackendBatchInterval = time.Second
+			if os.Getenv("BENCHMARK_ENABLE_PPROF") == "true" {
+				cfg.ServerConfig.EnablePprof = true
+			}
 		}),
 	)
 	if err != nil {
