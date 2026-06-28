@@ -20,6 +20,7 @@ import (
 
 	"go.uber.org/zap/zaptest"
 
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/server/v3/lease"
 	betesting "go.etcd.io/etcd/server/v3/storage/backend/testing"
 )
@@ -39,3 +40,46 @@ func BenchmarkKVWatcherMemoryUsage(b *testing.B) {
 		w.Watch(b.Context(), 0, []byte(fmt.Sprint("foo", i)), nil, 0)
 	}
 }
+
+func BenchmarkWatcherGroupMatching(b *testing.B) {
+	wg := newWatcherGroup()
+
+	// Create 100 range watchers (simulating namespaces ns-0 to ns-99)
+	for i := 0; i < 100; i++ {
+		ns := fmt.Sprintf("/pods/ns-%d/", i)
+		nsEnd := fmt.Sprintf("/pods/ns-%d0", i) // range end
+		wa := &watcher{
+			key:    []byte(ns),
+			end:    []byte(nsEnd),
+			minRev: 1,
+			id:     WatchID(i),
+			ch:     make(chan WatchResponse, 1000),
+		}
+		wg.add(wa)
+	}
+
+	// Create 50 events across these namespaces
+	evs := make([]*mvccpb.Event, 50)
+	for i := 0; i < 50; i++ {
+		nsIdx := i % 100
+		key := fmt.Sprintf("/pods/ns-%d/pod-%d", nsIdx, i)
+		evs[i] = &mvccpb.Event{
+			Type: mvccpb.Event_PUT,
+			Kv: &mvccpb.KeyValue{
+				Key:            []byte(key),
+				ModRevision:    2,
+				CreateRevision: 2,
+			},
+		}
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		wb := newWatcherBatch(&wg, evs)
+		if wb == nil {
+			b.Fatal("nil batch")
+		}
+	}
+}
+
