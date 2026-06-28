@@ -19,6 +19,16 @@ import (
 	"go.etcd.io/etcd/tests/v3/framework/e2e"
 )
 
+type storeCleanup struct {
+	client *clientv3.Client
+	epc    *e2e.EtcdProcessCluster
+}
+
+func (c storeCleanup) Close() {
+	c.client.Close()
+	c.epc.Close()
+}
+
 // 1. High-Level Benchmark Entry Point
 func BenchmarkWriteThroughput(b *testing.B) {
 	e2e.SkipInShortMode(b)
@@ -30,40 +40,7 @@ func BenchmarkWriteThroughput(b *testing.B) {
 	totalPods := nsCount * podPerNs
 	data := PrepareBenchmarkData(nsCount, podPerNs, payloadSize)
 
-	createStoreFn := func(tb testing.TB, dataDir string) (*clientv3.Client, func()) {
-		ctx := context.Background()
-		epc, err := e2e.NewEtcdProcessCluster(ctx, tb,
-			e2e.WithClusterSize(1),
-			e2e.WithQuotaBackendBytes(8589934592),
-			e2e.WithLogLevel("warn"),
-			e2e.WithDataDirPath(dataDir),
-			e2e.WithKeepDataDir(true),
-			e2e.WithBasePort(getNextBasePort()),
-		)
-		if err != nil {
-			tb.Fatal(err)
-		}
-
-		cfg := clientv3.Config{
-			Endpoints:   epc.EndpointsGRPC(),
-			DialTimeout: 5 * time.Second,
-		}
-		client, err := clientv3.New(cfg)
-		if err != nil {
-			tb.Fatal(err)
-		}
-
-		return client, func() {
-			client.Close()
-			epc.Close()
-		}
-	}
-
-	seedFn := func(ctx context.Context, client *clientv3.Client) error {
-		return preseedDatabase(ctx, client, data)
-	}
-
-	SetupPreseededDatabase(b, nsCount, totalPods, nodeCount, data, seedFn, createStoreFn)
+	SetupPreseededDatabase(b, nsCount, totalPods, nodeCount, data)
 
 	dataDir := os.Getenv("BENCHMARK_ETCD_DATA_DIR")
 	if dataDir == "" {
@@ -71,8 +48,8 @@ func BenchmarkWriteThroughput(b *testing.B) {
 	}
 
 	ctx := context.Background()
-	client, stopStore := createStoreFn(b, dataDir)
-	defer stopStore()
+	client, cleanup := createStore(b, dataDir)
+	defer cleanup.Close()
 
 	resp, err := client.KV.Get(ctx, "/pods/", clientv3.WithPrefix(), clientv3.WithCountOnly())
 	if err != nil {
@@ -84,15 +61,36 @@ func BenchmarkWriteThroughput(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	compactFn := func(ctx context.Context, rv int64) error {
-		_, err := client.Compact(ctx, rv, clientv3.WithCompactPhysical())
-		return err
-	}
-
-	RunBenchmarkWriteThroughput(ctx, b, client, data, nil, compactFn)
+	RunBenchmarkWriteThroughput(ctx, b, client, data, nil, true)
 }
 
 // 2. Direct Dependencies of BenchmarkWriteThroughput
+func createStore(tb testing.TB, dataDir string) (*clientv3.Client, storeCleanup) {
+	ctx := context.Background()
+	epc, err := e2e.NewEtcdProcessCluster(ctx, tb,
+		e2e.WithClusterSize(1),
+		e2e.WithQuotaBackendBytes(8589934592),
+		e2e.WithLogLevel("warn"),
+		e2e.WithDataDirPath(dataDir),
+		e2e.WithKeepDataDir(true),
+		e2e.WithBasePort(getNextBasePort()),
+	)
+	if err != nil {
+		tb.Fatal(err)
+	}
+
+	cfg := clientv3.Config{
+		Endpoints:   epc.EndpointsGRPC(),
+		DialTimeout: 5 * time.Second,
+	}
+	client, err := clientv3.New(cfg)
+	if err != nil {
+		tb.Fatal(err)
+	}
+
+	return client, storeCleanup{client: client, epc: epc}
+}
+
 func PrepareBenchmarkData(nsCount, podPerNs int, payloadSize int) BenchmarkData {
 	totalKeys := nsCount * podPerNs
 	keys := make([]string, 0, totalKeys)
@@ -111,7 +109,7 @@ func PrepareBenchmarkData(nsCount, podPerNs int, payloadSize int) BenchmarkData 
 	}
 }
 
-func SetupPreseededDatabase(b *testing.B, nsCount, totalPods, nodeCount int, data BenchmarkData, seedFn func(ctx context.Context, client *clientv3.Client) error, createStoreFn func(b testing.TB, dataDir string) (*clientv3.Client, func())) {
+func SetupPreseededDatabase(b *testing.B, nsCount, totalPods, nodeCount int, data BenchmarkData) {
 	archivePath := fmt.Sprintf("/tmp/etcd_db_%d_%d_%d.tar.gz", nsCount, totalPods, nodeCount)
 
 	var dataDir string
@@ -137,13 +135,13 @@ func SetupPreseededDatabase(b *testing.B, nsCount, totalPods, nodeCount int, dat
 
 	if !isPreseeded {
 		ctx := context.Background()
-		client, stopStore := createStoreFn(b, dataDir)
+		client, cleanup := createStore(b, dataDir)
 
-		if err := seedFn(ctx, client); err != nil {
+		if err := preseedDatabase(ctx, client, data); err != nil {
 			b.Fatalf("failed to seed database: %v", err)
 		}
 
-		stopStore()
+		cleanup.Close()
 
 		cmd := exec.Command("tar", "-czf", archivePath, "-C", dataDir, ".")
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -180,18 +178,18 @@ func PopulateInitialRevisions(ctx context.Context, client *clientv3.Client, data
 	return nil
 }
 
-func RunBenchmarkWriteThroughput(ctx context.Context, b *testing.B, client *clientv3.Client, data BenchmarkData, tracker *WatchLatencyTracker, compactFn func(context.Context, int64) error) {
+func RunBenchmarkWriteThroughput(ctx context.Context, b *testing.B, client *clientv3.Client, data BenchmarkData, tracker *WatchLatencyTracker, compact bool) {
 	if os.Getenv("ETCD_DATA_PRESEEDED") != "true" {
 		if err := preseedDatabase(ctx, client, data); err != nil {
 			b.Fatal(err)
 		}
-		if compactFn != nil {
+		if compact {
 			rv, err := getCurrentRevision(ctx, client)
 			if err != nil {
 				panic(fmt.Sprintf("Failed to get current resource version for seeding compaction: %v", err))
 			}
 			if rv > 0 {
-				if err := compactFn(ctx, rv); err != nil && !strings.Contains(err.Error(), "compacted") {
+				if _, err := client.Compact(ctx, rv, clientv3.WithCompactPhysical()); err != nil && !strings.Contains(err.Error(), "compacted") {
 					panic(fmt.Sprintf("Failed to compact etcd to revision %d after database seeding: %v", rv, err))
 				}
 			}
@@ -211,13 +209,13 @@ func RunBenchmarkWriteThroughput(ctx context.Context, b *testing.B, client *clie
 					loadTypes := []string{loadNone, loadWatcher}
 					for _, loadType := range loadTypes {
 						b.Run(fmt.Sprintf("Background=%s", loadType), func(b *testing.B) {
-							if compactFn != nil {
+							if compact {
 								rv, err := getCurrentRevision(ctx, client)
 								if err != nil {
 									panic(fmt.Sprintf("Failed to get current resource version for compaction: %v", err))
 								}
 								if rv > 0 {
-									if err := compactFn(ctx, rv); err != nil && !strings.Contains(err.Error(), "compacted") {
+									if _, err := client.Compact(ctx, rv, clientv3.WithCompactPhysical()); err != nil && !strings.Contains(err.Error(), "compacted") {
 										panic(fmt.Sprintf("Failed to compact etcd to revision %d before benchmark: %v", rv, err))
 									}
 								}
@@ -391,36 +389,38 @@ func runBenchmarkWriteThroughput(ctx context.Context, b *testing.B, client *clie
 func startBackgroundWatchers(ctx context.Context, client *clientv3.Client, data BenchmarkData, count int, wg *sync.WaitGroup, stopCh <-chan struct{}, eventCounter *atomic.Uint64, tracker *WatchLatencyTracker, resourceVersion int64) {
 	for i := 0; i < count; i++ {
 		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			opts := []clientv3.OpOption{
-				clientv3.WithRev(resourceVersion + 1),
-				clientv3.WithPrefix(),
-				clientv3.WithPrevKV(),
+		go watchLoop(ctx, client, resourceVersion+1, eventCounter, tracker, stopCh, wg)
+	}
+}
+
+func watchLoop(ctx context.Context, client *clientv3.Client, resourceVersion int64, eventCounter *atomic.Uint64, tracker *WatchLatencyTracker, stopCh <-chan struct{}, wg *sync.WaitGroup) {
+	defer wg.Done()
+	opts := []clientv3.OpOption{
+		clientv3.WithRev(resourceVersion),
+		clientv3.WithPrefix(),
+		clientv3.WithPrevKV(),
+	}
+	wch := client.Watch(ctx, "/pods/", opts...)
+	for {
+		select {
+		case <-stopCh:
+			return
+		case <-ctx.Done():
+			return
+		case wres, ok := <-wch:
+			if !ok {
+				return
 			}
-			wch := client.Watch(ctx, "/pods/", opts...)
-			for {
-				select {
-				case <-stopCh:
-					return
-				case <-ctx.Done():
-					return
-				case wres, ok := <-wch:
-					if !ok {
-						return
-					}
-					if wres.Err() != nil {
-						return
-					}
-					for _, ev := range wres.Events {
-						eventCounter.Add(1)
-						if tracker != nil {
-							tracker.HandleEvent(ev)
-						}
-					}
+			if wres.Err() != nil {
+				return
+			}
+			for _, ev := range wres.Events {
+				eventCounter.Add(1)
+				if tracker != nil {
+					tracker.HandleEvent(ev)
 				}
 			}
-		}()
+		}
 	}
 }
 
