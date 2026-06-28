@@ -565,100 +565,42 @@ func runTraffic(ctx context.Context, b *testing.B, client *clientv3.Client, data
 	return writes
 }
 
-func startBackgroundWatchers(ctx context.Context, store storage.Interface, data BenchmarkData, count int, readIndexed bool, wg *sync.WaitGroup, stopCh <-chan struct{}, eventCounter *atomic.Uint64, tracker *WatchLatencyTracker, resourceVersion string) {
-	for i := range count {
+func startBackgroundWatchers(ctx context.Context, client *clientv3.Client, data BenchmarkData, count int, wg *sync.WaitGroup, stopCh <-chan struct{}, eventCounter *atomic.Uint64, tracker *WatchLatencyTracker, resourceVersion int64) {
+	for i := 0; i < count; i++ {
 		wg.Add(1)
-		go func(i int) {
+		go func() {
 			defer wg.Done()
-			opts := storage.ListOptions{
-				ResourceVersion: resourceVersion,
-				Recursive:       true,
-				Predicate:       storage.Everything,
+			opts := []clientv3.OpOption{
+				clientv3.WithRev(resourceVersion + 1),
+				clientv3.WithPrefix(),
+				clientv3.WithPrevKV(),
 			}
-			if readIndexed {
-				nodeName := "default-node"
-				if len(data.NodeNames) > 0 {
-					nodeName = data.NodeNames[i%len(data.NodeNames)]
-				}
-				opts.Predicate.GetAttrs = podAttr
-				opts.Predicate.IndexFields = []string{"spec.nodeName"}
-				opts.Predicate.Field = fields.SelectorFromSet(fields.Set{"spec.nodeName": nodeName})
-			}
-			w, err := store.Watch(ctx, "/pods/", opts)
-			if err != nil {
-				return
-			}
-			defer w.Stop()
+			wch := client.Watch(ctx, "/pods/", opts...)
 			for {
 				select {
 				case <-stopCh:
 					return
 				case <-ctx.Done():
 					return
-				case ev, ok := <-w.ResultChan():
+				case wres, ok := <-wch:
 					if !ok {
 						return
 					}
-					eventCounter.Add(1)
-					if tracker != nil {
-						tracker.HandleEvent(ev.Type, ev.Object)
+					if wres.Err() != nil {
+						return
+					}
+					for _, ev := range wres.Events {
+						eventCounter.Add(1)
+						if tracker != nil {
+							tracker.HandleEvent(&ev)
+						}
 					}
 				}
 			}
-		}(i)
+		}()
 	}
 }
 
-func startBackgroundListers(ctx context.Context, store storage.Interface, data BenchmarkData, count int, readIndexed bool, wg *sync.WaitGroup, stopCh <-chan struct{}, listCounter *atomic.Uint64, objCounter *atomic.Uint64, rvMatch metav1.ResourceVersionMatch, latestRV *atomic.Pointer[string]) {
-	for i := range count {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			listOut := &corev1.PodList{}
-			for {
-				select {
-				case <-stopCh:
-					return
-				case <-ctx.Done():
-					return
-				default:
-				}
-
-				opts := storage.ListOptions{
-					Recursive:            true,
-					ResourceVersionMatch: rvMatch,
-					Predicate:            storage.Everything,
-				}
-				switch rvMatch {
-				case metav1.ResourceVersionMatchExact, metav1.ResourceVersionMatchNotOlderThan:
-					rv := *latestRV.Load()
-					if rv == "0" || rv == "" {
-						time.Sleep(10 * time.Millisecond)
-						continue
-					}
-					opts.ResourceVersion = rv
-				case "":
-				default:
-					panic(fmt.Sprintf("Unknown rvMatch: %s", rvMatch))
-				}
-				if readIndexed {
-					nodeName := "default-node"
-					if len(data.NodeNames) > 0 {
-						nodeName = data.NodeNames[i%len(data.NodeNames)]
-					}
-					opts.Predicate.GetAttrs = podAttr
-					opts.Predicate.IndexFields = []string{"spec.nodeName"}
-					opts.Predicate.Field = fields.SelectorFromSet(fields.Set{"spec.nodeName": nodeName})
-				}
-				err := store.GetList(ctx, "/pods/", opts, listOut)
-				if err == nil {
-					listCounter.Add(1)
-					objCounter.Add(uint64(len(listOut.Items)))
-				}
-			}
-		}(i)
-	}
-}
 
 type etcdStats struct {
 	create uint64
