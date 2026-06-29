@@ -136,8 +136,14 @@ func SetupPreseededDatabase(b *testing.B, nsCount, totalPods, nodeCount int, dat
 
 func createStore(tb testing.TB, dataDir string) (*clientv3.Client, storeCleanup) {
 	ctx := context.Background()
+	clusterSize := 1
+	if sizeStr := os.Getenv("BENCHMARK_CLUSTER_SIZE"); sizeStr != "" {
+		if val, err := strconv.Atoi(sizeStr); err == nil {
+			clusterSize = val
+		}
+	}
 	epc, err := e2e.NewEtcdProcessCluster(ctx, tb,
-		e2e.WithClusterSize(1),
+		e2e.WithClusterSize(clusterSize),
 		e2e.WithQuotaBackendBytes(8589934592),
 		e2e.WithLogLevel("warn"),
 		e2e.WithDataDirPath(dataDir),
