@@ -18,15 +18,20 @@ import (
 	"bytes"
 	"fmt"
 	"math"
+	"sync"
 
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/pkg/v3/adt"
 )
 
-// watchBatchMaxRevs is the maximum distinct revisions that
-// may be sent to an unsynced watcher at a time. Declared as
-// var instead of const for testing purposes.
 var watchBatchMaxRevs = 1000
+
+var watcherSlicePool = sync.Pool{
+	New: func() interface{} {
+		return make([]*watcher, 0, 128)
+	},
+}
+
 
 type eventBatch struct {
 	// evs is a batch of revision-ordered events
@@ -81,9 +86,12 @@ func newWatcherBatch(wg *watcherGroup, evs []*mvccpb.Event) watcherBatch {
 	}
 
 	wb := make(watcherBatch)
+	watchers := watcherSlicePool.Get().([]*watcher)
+
 	for _, ev := range evs {
+		watchers = wg.appendWatchers(string(ev.Kv.Key), watchers[:0])
 		first := true
-		for w := range wg.keyWatchers[string(ev.Kv.Key)] {
+		for _, w := range watchers {
 			if ev.Kv.ModRevision >= w.minRev {
 				if first {
 					wb.add(w, ev)
@@ -93,21 +101,9 @@ func newWatcherBatch(wg *watcherGroup, evs []*mvccpb.Event) watcherBatch {
 				}
 			}
 		}
-		if len(wg.rangesSlice) > 0 {
-			for _, w := range wg.rangesSlice {
-				if bytes.Compare(ev.Kv.Key, w.key) >= 0 && (len(w.end) == 0 || bytes.Compare(ev.Kv.Key, w.end) < 0) {
-					if ev.Kv.ModRevision >= w.minRev {
-						if first {
-							wb.add(w, ev)
-							first = false
-						} else {
-							wb.add(w, cloneEvent(ev))
-						}
-					}
-				}
-			}
-		}
 	}
+
+	watcherSlicePool.Put(watchers)
 	return wb
 }
 
@@ -326,4 +322,21 @@ func (wg *watcherGroup) watcherSetByKey(key string) watcherSet {
 		ret.union(item.Val.(watcherSet))
 	}
 	return ret
+}
+
+// appendWatchers appends all watchers matching the given key to dst and returns the modified slice.
+func (wg *watcherGroup) appendWatchers(key string, dst []*watcher) []*watcher {
+	wkeys := wg.keyWatchers[key]
+	for w := range wkeys {
+		dst = append(dst, w)
+	}
+	if len(wg.rangesSlice) > 0 {
+		keyBytes := []byte(key)
+		for _, w := range wg.rangesSlice {
+			if bytes.Compare(keyBytes, w.key) >= 0 && (len(w.end) == 0 || bytes.Compare(keyBytes, w.end) < 0) {
+				dst = append(dst, w)
+			}
+		}
+	}
+	return dst
 }
