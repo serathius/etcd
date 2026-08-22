@@ -200,6 +200,9 @@ type ServerConfig struct {
 
 	// Metrics types of metrics - should be either 'basic' or 'extensive'
 	Metrics string
+
+	// StorageEngine specifies the backend storage engine type ("bbolt" or "pebble").
+	StorageEngine string `json:"storage"`
 }
 
 // VerifyBootstrap sanity-checks the initial config for bootstrap case

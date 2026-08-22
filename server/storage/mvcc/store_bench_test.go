@@ -33,6 +33,7 @@ import (
 	"go.etcd.io/etcd/pkg/v3/traceutil"
 	"go.etcd.io/etcd/server/v3/lease"
 	"go.etcd.io/etcd/server/v3/storage/backend"
+	"go.etcd.io/etcd/server/v3/storage/schema"
 )
 
 //go:embed testdata/exemplar_pod.pb
@@ -511,11 +512,12 @@ func makeKey(index int) []byte {
 }
 
 type storage struct {
-	name   string
-	store  WatchableKV
-	dir    string
-	close  func()
-	defrag func() error
+	name    string
+	store   WatchableKV
+	backend backend.Backend
+	dir     string
+	close   func()
+	defrag  func() error
 }
 
 func (s *storage) Defrag() error {
@@ -540,14 +542,72 @@ var DefaultStorageDrivers = []StorageDriver{
 			dbPath := filepath.Join(dir, "bbolt.db")
 			be := backend.NewDefaultBackend(zap.NewNop(), dbPath)
 			st := New(zap.NewNop(), be, &lease.FakeLessor{}, StoreConfig{})
+			tx := be.BatchTx()
+			tx.Lock()
+			for _, b := range schema.AllBuckets {
+				tx.UnsafeCreateBucket(b)
+			}
+			tx.Unlock()
+			be.ForceCommit()
 			return &storage{
-				name:   "bbolt",
-				store:  st,
-				dir:    dir,
-				defrag: func() error { return be.Defrag() },
+				name:    "bbolt",
+				store:   st,
+				backend: be,
+				dir:     dir,
+				defrag:  func() error { return be.Defrag() },
 				close: func() {
 					_ = st.Close()
 					_ = be.Close()
+				},
+			}, nil
+		},
+	},
+	{
+		Name: "pebble",
+		Setup: func(dir string) (*storage, error) {
+			pDir := filepath.Join(dir, "pebble")
+			bcfg := backend.DefaultBackendConfig(zap.NewNop())
+			bcfg.Path = pDir
+			be, err := backend.NewPebbleBackend(bcfg)
+			if err != nil {
+				return nil, err
+			}
+			st := New(zap.NewNop(), be, &lease.FakeLessor{}, StoreConfig{})
+			tx := be.BatchTx()
+			tx.Lock()
+			for _, b := range schema.AllBuckets {
+				tx.UnsafeCreateBucket(b)
+			}
+			tx.Unlock()
+			be.ForceCommit()
+			return &storage{
+				name:    "pebble",
+				store:   st,
+				backend: be,
+				dir:     pDir,
+				defrag:  be.Defrag,
+				close: func() {
+					_ = st.Close()
+					_ = be.Close()
+				},
+			}, nil
+		},
+	},
+	{
+		Name: "badger",
+		Setup: func(dir string) (*storage, error) {
+			bDir := filepath.Join(dir, "badger")
+			st, err := NewBadgerStore(zap.NewNop(), bDir, &lease.FakeLessor{}, StoreConfig{})
+			if err != nil {
+				return nil, err
+			}
+			return &storage{
+				name:   "badger",
+				store:  st,
+				dir:    bDir,
+				defrag: st.(*badgerStore).Defrag,
+				close: func() {
+					_ = st.Close()
 				},
 			}, nil
 		},

@@ -55,6 +55,7 @@ func (f killFailpoint) Inject(ctx context.Context, t *testing.T, lg *zap.Logger,
 			return nil, err
 		}
 	}
+	time.Sleep(200 * time.Millisecond)
 	err := member.Start(ctx)
 	if err != nil {
 		return nil, err

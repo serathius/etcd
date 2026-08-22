@@ -171,7 +171,7 @@ func Exploratory(_ *testing.T) []TestScenario {
 		}
 		scenarios = newScenarios
 	}
-	return scenarios
+	return applyStorageEngine(scenarios)
 }
 
 func Regression(t *testing.T) []TestScenario {
@@ -342,6 +342,15 @@ func Regression(t *testing.T) []TestScenario {
 			Traffic: traffic.EtcdPut,
 			Cluster: *e2e.NewConfig(opts...),
 		})
+	}
+	return applyStorageEngine(scenarios)
+}
+
+func applyStorageEngine(scenarios []TestScenario) []TestScenario {
+	if storage := os.Getenv("STORAGE"); storage != "" {
+		for i := range scenarios {
+			scenarios[i].Cluster.ServerConfig.StorageEngine = storage
+		}
 	}
 	return scenarios
 }

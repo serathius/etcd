@@ -148,7 +148,6 @@ func (ep *EtcdServerProcess) Etcdctl(opts ...config.ClientOption) *EtcdctlV3 {
 }
 
 func (ep *EtcdServerProcess) Start(ctx context.Context) error {
-	ep.donec = make(chan struct{})
 	if ep.proc != nil {
 		panic("already started")
 	}
@@ -169,15 +168,34 @@ func (ep *EtcdServerProcess) Start(ctx context.Context) error {
 		}
 	}
 
-	ep.cfg.lg.Info("starting server...", zap.String("name", ep.cfg.Name))
-	proc, err := SpawnCmdWithLogger(ep.cfg.lg, append([]string{ep.cfg.ExecPath}, ep.cfg.Args...), ep.cfg.EnvVars, ep.cfg.Name)
-	if err != nil {
-		return err
-	}
-	ep.proc = proc
-	err = ep.waitReady(ctx)
-	if err == nil {
-		ep.cfg.lg.Info("started server.", zap.String("name", ep.cfg.Name), zap.Int("pid", ep.proc.Pid()))
+	var err error
+	for attempt := 0; attempt < 15; attempt++ {
+		ep.donec = make(chan struct{})
+		ep.cfg.lg.Info("starting server...", zap.String("name", ep.cfg.Name))
+		var proc *expect.ExpectProcess
+		proc, err = SpawnCmdWithLogger(ep.cfg.lg, append([]string{ep.cfg.ExecPath}, ep.cfg.Args...), ep.cfg.EnvVars, ep.cfg.Name)
+		if err != nil {
+			return err
+		}
+		ep.proc = proc
+		err = ep.waitReady(ctx)
+		if err == nil {
+			ep.cfg.lg.Info("started server.", zap.String("name", ep.cfg.Name), zap.Int("pid", ep.proc.Pid()))
+			return nil
+		}
+		ep.cfg.lg.Warn("failed waiting for server to be ready, will retry", zap.String("name", ep.cfg.Name), zap.Int("attempt", attempt), zap.Error(err))
+		if ep.cfg.GoFailPort != 0 {
+			ep.cfg.GoFailPort++
+			ep.cfg.EnvVars["GOFAIL_HTTP"] = fmt.Sprintf("127.0.0.1:%d", ep.cfg.GoFailPort)
+		}
+		ep.proc.Stop()
+		ep.proc.Close()
+		ep.proc = nil
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(300 * time.Millisecond):
+		}
 	}
 	return err
 }
@@ -255,7 +273,14 @@ func (ep *EtcdServerProcess) Close() error {
 }
 
 func (ep *EtcdServerProcess) waitReady(ctx context.Context) error {
-	defer close(ep.donec)
+	ch := ep.donec
+	defer func() {
+		select {
+		case <-ch:
+		default:
+			close(ch)
+		}
+	}()
 	err := WaitReadyExpectProc(ctx, ep.proc, EtcdServerReadyLines)
 	if err != nil {
 		return fmt.Errorf("failed to find etcd ready lines %q, err: %w", EtcdServerReadyLines, err)
@@ -308,7 +333,10 @@ func (ep *EtcdServerProcess) Wait(ctx context.Context) error {
 	}()
 	select {
 	case <-ch:
-		ep.proc = nil
+		if ep.proc != nil {
+			ep.proc.Close()
+			ep.proc = nil
+		}
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()

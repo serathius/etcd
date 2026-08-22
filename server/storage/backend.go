@@ -52,6 +52,16 @@ func newBackend(cfg config.ServerConfig, hooks backend.Hooks) backend.Backend {
 	}
 	bcfg.Mlock = cfg.MemoryMlock
 	bcfg.Hooks = hooks
+	if cfg.StorageEngine == "pebble" {
+		be, err := backend.NewPebbleBackend(bcfg)
+		if err != nil {
+			if cfg.Logger != nil {
+				cfg.Logger.Panic("failed to open pebble backend", zap.Error(err))
+			}
+			panic(err)
+		}
+		return be
+	}
 	return backend.New(bcfg)
 }
 
@@ -60,6 +70,22 @@ func OpenSnapshotBackend(cfg config.ServerConfig, ss *snap.Snapshotter, snapshot
 	snapPath, err := ss.DBFilePath(snapshot.Metadata.GetIndex())
 	if err != nil {
 		return nil, fmt.Errorf("failed to find database snapshot file (%w)", err)
+	}
+	if cfg.StorageEngine == "pebble" {
+		f, err := os.Open(snapPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open database snapshot file (%w)", err)
+		}
+		defer f.Close()
+		bcfg := backend.DefaultBackendConfig(cfg.Logger)
+		bcfg.Path = cfg.BackendPath()
+		bcfg.Hooks = hooks
+		be, err := backend.RestorePebbleSnapshot(f, bcfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to restore pebble snapshot (%w)", err)
+		}
+		os.Remove(snapPath)
+		return be, nil
 	}
 	if err := os.Rename(snapPath, cfg.BackendPath()); err != nil {
 		return nil, fmt.Errorf("failed to rename database snapshot file (%w)", err)

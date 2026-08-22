@@ -63,3 +63,9 @@ func WithVersion(input ...e2e.ClusterVersion) e2e.EPClusterOption {
 func WithInitialLeaderIndex(input ...int) e2e.EPClusterOption {
 	return func(c *e2e.EtcdProcessClusterConfig) { c.InitialLeaderIndex = input[internalRand.Intn(len(input))] }
 }
+
+func WithStorage(input ...string) e2e.EPClusterOption {
+	return func(c *e2e.EtcdProcessClusterConfig) {
+		c.ServerConfig.StorageEngine = input[internalRand.Intn(len(input))]
+	}
+}

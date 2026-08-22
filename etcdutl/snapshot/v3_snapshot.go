@@ -18,7 +18,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -27,6 +29,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/Masterminds/semver/v3"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
@@ -112,14 +115,129 @@ type Status struct {
 	Version string `json:"version"`
 }
 
+func isPebbleSnapshot(dbPath string) bool {
+	fi, err := os.Stat(dbPath)
+	if err != nil {
+		return false
+	}
+	if fi.IsDir() {
+		return true
+	}
+	f, err := os.Open(dbPath)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	var magic [4]byte
+	if _, err := io.ReadFull(f, magic[:]); err != nil {
+		return false
+	}
+	// Bolt DB magic is 0xED0CDAED (in little-endian: 0xED, 0xCD, 0xAE, 0xED)
+	if magic[0] == 0xED && magic[1] == 0xCD && magic[2] == 0xAE && magic[3] == 0xED {
+		return false
+	}
+	return true
+}
+
+func (s *v3Manager) pebbleStatus(dbPath string, fi os.FileInfo) (Status, error) {
+	var ds Status
+	ds.TotalSize = fi.Size()
+
+	f, err := os.Open(dbPath)
+	if err != nil {
+		return ds, err
+	}
+	defer f.Close()
+
+	h := crc32.New(crc32.MakeTable(crc32.Castagnoli))
+	seenKeys := make(map[string]struct{})
+	var curBucket string
+
+	var header [12]byte
+	for {
+		_, err := io.ReadFull(f, header[:])
+		if err == io.EOF || errors.Is(err, io.ErrUnexpectedEOF) {
+			break
+		}
+		if err != nil {
+			return ds, fmt.Errorf("failed to read snapshot header: %w", err)
+		}
+
+		bLen := binary.BigEndian.Uint32(header[0:4])
+		kLen := binary.BigEndian.Uint32(header[4:8])
+		vLen := binary.BigEndian.Uint32(header[8:12])
+		if bLen == 0 && kLen == 0 && vLen == 0 {
+			break
+		}
+
+		payload := make([]byte, bLen+kLen+vLen)
+		if _, err := io.ReadFull(f, payload); err != nil {
+			break
+		}
+
+		bName := payload[:bLen]
+		k := payload[bLen : bLen+kLen]
+		v := payload[bLen+kLen:]
+
+		if string(bName) != curBucket {
+			curBucket = string(bName)
+			h.Write(bName)
+		}
+		h.Write(k)
+		h.Write(v)
+
+		if bytes.Equal(bName, schema.Meta.Name()) && bytes.Equal(k, schema.MetaStorageVersionName) {
+			vSem, err := semver.NewVersion(string(v))
+			if err == nil {
+				ds.Version = vSem.String()
+			}
+		}
+
+		if bytes.Equal(bName, schema.Key.Name()) {
+			rev, err := bytesToRev(k)
+			if err != nil {
+				return ds, fmt.Errorf("cannot parse revision key: %q err: %w", k, err)
+			}
+			if rev.Main > ds.Revision {
+				ds.Revision = rev.Main
+			}
+
+			var kv mvccpb.KeyValue
+			err = proto.Unmarshal(v, &kv)
+			if err != nil {
+				return ds, fmt.Errorf("cannot unmarshal value, key: %q value: %q err: %w", k, v, err)
+			}
+			key := string(kv.Key)
+			if !mvcc.IsTombstone(k) {
+				seenKeys[key] = struct{}{}
+			} else {
+				delete(seenKeys, key)
+			}
+		}
+	}
+
+	ds.TotalKey = len(seenKeys)
+	ds.Hash = h.Sum32()
+	return ds, nil
+}
+
 // Status returns the snapshot file information.
 func (s *v3Manager) Status(dbPath string) (ds Status, err error) {
-	if _, err = os.Stat(dbPath); err != nil {
+	fi, err := os.Stat(dbPath)
+	if err != nil {
 		return ds, err
+	}
+
+	if isPebbleSnapshot(dbPath) {
+		return s.pebbleStatus(dbPath, fi)
 	}
 
 	db, err := bolt.Open(dbPath, 0o400, &bolt.Options{ReadOnly: true})
 	if err != nil {
+		if pds, perr := s.pebbleStatus(dbPath, fi); perr == nil {
+			return pds, nil
+		}
 		return ds, err
 	}
 	defer db.Close()
@@ -351,6 +469,10 @@ func (s *v3Manager) outDbPath() string {
 
 // saveDB copies the database snapshot to the snapshot directory
 func (s *v3Manager) saveDB() error {
+	if isPebbleSnapshot(s.srcDbPath) {
+		return s.savePebbleDB()
+	}
+
 	err := s.copyAndVerifyDB()
 	if err != nil {
 		return err
@@ -363,6 +485,73 @@ func (s *v3Manager) saveDB() error {
 	if err != nil {
 		return err
 	}
+
+	return nil
+}
+
+func (s *v3Manager) savePebbleDB() error {
+	srcf, ferr := os.Open(s.srcDbPath)
+	if ferr != nil {
+		return ferr
+	}
+	defer srcf.Close()
+
+	fi, err := srcf.Stat()
+	if err != nil {
+		return err
+	}
+	size := fi.Size()
+
+	var payloadLimit int64 = size
+	hasHash := hasChecksum(size)
+	if hasHash {
+		payloadLimit = size - sha256.Size
+		if _, err := srcf.Seek(-sha256.Size, io.SeekEnd); err != nil {
+			return err
+		}
+		sha := make([]byte, sha256.Size)
+		if _, err := srcf.Read(sha); err != nil {
+			return err
+		}
+		if _, err := srcf.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+
+		if !s.skipHashCheck {
+			h := sha256.New()
+			if _, err := io.CopyN(h, srcf, payloadLimit); err != nil {
+				return err
+			}
+			dbsha := h.Sum(nil)
+			if !reflect.DeepEqual(sha, dbsha) {
+				return fmt.Errorf("expected sha256 %v, got %v", sha, dbsha)
+			}
+			if _, err := srcf.Seek(0, io.SeekStart); err != nil {
+				return err
+			}
+		}
+	} else if !s.skipHashCheck {
+		return fmt.Errorf("snapshot missing hash but --skip-hash-check=false")
+	}
+
+	if err := fileutil.CreateDirAll(s.lg, s.snapDir); err != nil {
+		return err
+	}
+
+	bcfg := backend.DefaultBackendConfig(s.lg)
+	bcfg.Path = s.outDbPath()
+	bcfg.MmapSize = s.initialMmapSize
+
+	be, err := backend.RestorePebbleSnapshot(io.LimitReader(srcf, payloadLimit), bcfg)
+	if err != nil {
+		return fmt.Errorf("failed to restore pebble snapshot: %w", err)
+	}
+	defer be.Close()
+
+	if err := schema.NewMembershipBackend(s.lg, be).TrimMembershipFromBackend(); err != nil {
+		return err
+	}
+	be.ForceCommit()
 
 	return nil
 }

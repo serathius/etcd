@@ -54,7 +54,7 @@ type watchable interface {
 }
 
 type watchableStore struct {
-	*store
+	*bboltStore
 
 	// mu protects watcher groups and batches. It should never be locked
 	// before locking store.mu to avoid deadlock.
@@ -94,14 +94,14 @@ func newWatchableStore(lg *zap.Logger, b backend.Backend, le lease.Lessor, cfg S
 		lg = zap.NewNop()
 	}
 	s := &watchableStore{
-		store:    NewStore(lg, b, le, cfg),
-		victimc:  make(chan struct{}, 1),
-		unsynced: newWatcherGroup(),
-		synced:   newWatcherGroup(),
-		stopc:    make(chan struct{}),
+		bboltStore: NewStore(lg, b, le, cfg),
+		victimc:    make(chan struct{}, 1),
+		unsynced:   newWatcherGroup(),
+		synced:     newWatcherGroup(),
+		stopc:      make(chan struct{}),
 	}
-	s.store.ReadView = &readView{s}
-	s.store.WriteView = &writeView{s}
+	s.bboltStore.ReadView = &readView{s}
+	s.bboltStore.WriteView = &writeView{s}
 	if s.le != nil {
 		// use this store as the deleter so revokes trigger watch events
 		s.le.SetRangeDeleter(func() lease.TxnDelete { return s.Write(traceutil.TODO()) })
@@ -112,7 +112,7 @@ func newWatchableStore(lg *zap.Logger, b backend.Backend, le lease.Lessor, cfg S
 func (s *watchableStore) Close() error {
 	close(s.stopc)
 	s.wg.Wait()
-	return s.store.Close()
+	return s.bboltStore.Close()
 }
 
 func (s *watchableStore) NewWatchStream() WatchStream {
@@ -138,9 +138,9 @@ func (s *watchableStore) watch(key, end []byte, startRev int64, id WatchID, ch c
 
 	s.mu.Lock()
 	s.revMu.RLock()
-	synced := startRev > s.store.currentRev || startRev == 0
+	synced := startRev > s.bboltStore.currentRev || startRev == 0
 	if synced {
-		wa.minRev = s.store.currentRev + 1
+		wa.minRev = s.bboltStore.currentRev + 1
 		if startRev > wa.minRev {
 			wa.minRev = startRev
 		}
@@ -207,7 +207,7 @@ func (s *watchableStore) cancelWatcher(wa *watcher) {
 func (s *watchableStore) Restore(b backend.Backend) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	err := s.store.Restore(b)
+	err := s.bboltStore.Restore(b)
 	if err != nil {
 		return err
 	}
@@ -308,8 +308,8 @@ func (s *watchableStore) moveVictims() (moved int) {
 
 		// assign completed victim watchers to unsync/sync
 		s.mu.Lock()
-		s.store.revMu.RLock()
-		curRev := s.store.currentRev
+		s.bboltStore.revMu.RLock()
+		curRev := s.bboltStore.currentRev
 		for w, eb := range wb {
 			if newVictim != nil && newVictim[w] != nil {
 				// couldn't send watch response; stays victim
@@ -326,7 +326,7 @@ func (s *watchableStore) moveVictims() (moved int) {
 				s.synced.add(w)
 			}
 		}
-		s.store.revMu.RUnlock()
+		s.bboltStore.revMu.RUnlock()
 		s.mu.Unlock()
 	}
 
@@ -353,17 +353,17 @@ func (s *watchableStore) syncWatchers() int {
 		return 0
 	}
 
-	s.store.revMu.RLock()
-	defer s.store.revMu.RUnlock()
+	s.bboltStore.revMu.RLock()
+	defer s.bboltStore.revMu.RUnlock()
 
 	// in order to find key-value pairs from unsynced watchers, we need to
 	// find min revision index, and these revisions can be used to
 	// query the backend store of key-value pairs
-	curRev := s.store.currentRev
-	compactionRev := s.store.compactMainRev
+	curRev := s.bboltStore.currentRev
+	compactionRev := s.bboltStore.compactMainRev
 
 	wg, minRev := s.unsynced.choose(maxWatchersPerSync, curRev, compactionRev)
-	evs := rangeEvents(s.store.lg, s.store.b, minRev, curRev+1, wg)
+	evs := rangeEvents(s.bboltStore.lg, s.bboltStore.b, minRev, curRev+1, wg)
 
 	victims := make(watcherBatch)
 	wb := newWatcherBatch(wg, evs)
@@ -471,7 +471,7 @@ func (s *watchableStore) notify(rev int64, evs []*mvccpb.Event) {
 	victim := make(watcherBatch)
 	for w, eb := range newWatcherBatch(&s.synced, evs) {
 		if eb.revs != 1 {
-			s.store.lg.Panic(
+			s.bboltStore.lg.Panic(
 				"unexpected multiple revisions in watch notification",
 				zap.Int("number-of-revisions", eb.revs),
 			)
@@ -504,7 +504,7 @@ func (s *watchableStore) addVictim(victim watcherBatch) {
 	}
 }
 
-func (s *watchableStore) rev() int64 { return s.store.Rev() }
+func (s *watchableStore) rev() int64 { return s.bboltStore.Rev() }
 
 func (s *watchableStore) progress(w *watcher) {
 	s.progressIfSync(map[WatchID]*watcher{w.id: w}, w.id)

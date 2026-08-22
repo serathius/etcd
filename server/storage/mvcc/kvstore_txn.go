@@ -34,7 +34,7 @@ type storeTxnRead struct {
 }
 
 type storeTxnCommon struct {
-	s  *store
+	s  *bboltStore
 	tx backend.UnsafeReader
 
 	firstRev int64
@@ -43,7 +43,7 @@ type storeTxnCommon struct {
 	trace *traceutil.Trace
 }
 
-func (s *store) Read(mode ReadTxMode, trace *traceutil.Trace) TxnRead {
+func (s *bboltStore) Read(mode ReadTxMode, trace *traceutil.Trace) TxnRead {
 	s.mu.RLock()
 	s.revMu.RLock()
 	// For read-only workloads, we use shared buffer by copying transaction read buffer
@@ -171,7 +171,7 @@ type storeTxnWrite struct {
 	changes  []*mvccpb.KeyValue
 }
 
-func (s *store) Write(trace *traceutil.Trace) TxnWrite {
+func (s *bboltStore) Write(trace *traceutil.Trace) TxnWrite {
 	s.mu.RLock()
 	tx := s.b.BatchTx()
 	tx.LockInsideApply()

@@ -17,10 +17,13 @@ package embed
 import (
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/pkg/v3/transport"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/v3client"
 )
 
 func TestEmptyClientTLSInfo_createMetricsListener(t *testing.T) {
@@ -36,4 +39,46 @@ func TestEmptyClientTLSInfo_createMetricsListener(t *testing.T) {
 	}
 	_, err := e.createMetricsListener(murl)
 	require.ErrorIsf(t, err, ErrMissingClientTLSInfoForMetricsURL, "expected error %v, got %v", ErrMissingClientTLSInfoForMetricsURL, err)
+}
+
+func TestStartEtcdPebble(t *testing.T) {
+	tdir := t.TempDir()
+	cfg := NewConfig()
+
+	testURLConfig := newConfigTestURLs()
+	applyTestURLConfig(cfg, testURLConfig)
+
+	cfg.Dir = tdir
+	cfg.StorageEngine = "pebble"
+	e, err := StartEtcd(cfg)
+	require.NoError(t, err)
+	defer e.Close()
+
+	select {
+	case <-e.Server.ReadyNotify():
+	case <-time.After(10 * time.Second):
+		t.Fatal("etcd server with pebble timed out waiting to become ready")
+	}
+
+	client := v3client.New(e.Server)
+	defer client.Close()
+
+	// 1. Put / Get
+	_, err = client.Put(t.Context(), "foo", "bar")
+	require.NoError(t, err)
+	resp, err := client.Get(t.Context(), "foo")
+	require.NoError(t, err)
+	require.Equal(t, 1, len(resp.Kvs))
+	require.Equal(t, []byte("bar"), resp.Kvs[0].Value)
+
+	// 2. Lease
+	lresp, err := client.Grant(t.Context(), 10)
+	require.NoError(t, err)
+	require.NotZero(t, lresp.ID)
+	_, err = client.Put(t.Context(), "leased-key", "val", clientv3.WithLease(lresp.ID))
+	require.NoError(t, err)
+
+	// 3. Compact
+	_, err = client.Compact(t.Context(), resp.Kvs[0].ModRevision)
+	require.NoError(t, err)
 }

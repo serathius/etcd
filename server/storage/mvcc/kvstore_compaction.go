@@ -25,7 +25,7 @@ import (
 	"go.etcd.io/etcd/server/v3/storage/schema"
 )
 
-func (s *store) scheduleCompaction(compactMainRev, prevCompactRev int64) (KeyValueHash, error) {
+func (s *bboltStore) scheduleCompaction(compactMainRev, prevCompactRev int64) (KeyValueHash, error) {
 	totalStart := time.Now()
 	keep := s.kvindex.Compact(compactMainRev)
 	indexCompactionPauseMs.Observe(float64(time.Since(totalStart) / time.Millisecond))

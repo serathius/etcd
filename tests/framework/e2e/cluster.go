@@ -20,10 +20,12 @@ import (
 	"fmt"
 	"maps"
 	"net/url"
+	"os"
 	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -41,6 +43,16 @@ import (
 )
 
 const EtcdProcessBasePort = 20000
+
+var nextBasePort int32 = 20000
+
+func getNextBasePort() int {
+	port := atomic.AddInt32(&nextBasePort, 100)
+	if port > 45000 {
+		atomic.StoreInt32(&nextBasePort, 20000)
+	}
+	return int(port - 100)
+}
 
 type ClientConnType int
 
@@ -186,7 +198,12 @@ func DefaultConfig() *EtcdProcessClusterConfig {
 		InitialLeaderIndex: -1,
 		ServerConfig:       *embed.NewConfig(),
 	}
+	if storage := os.Getenv("STORAGE"); storage != "" {
+		cfg.ServerConfig.StorageEngine = storage
+	}
 	cfg.ServerConfig.InitialClusterToken = "new"
+	cfg.ServerConfig.SocketOpts.ReuseAddress = true
+	cfg.ServerConfig.SocketOpts.ReusePort = true
 	return cfg
 }
 
@@ -420,7 +437,7 @@ func InitEtcdProcessCluster(tb testing.TB, cfg *EtcdProcessClusterConfig) (*Etcd
 		cfg.Logger = zaptest.NewLogger(tb)
 	}
 	if cfg.BasePort == 0 {
-		cfg.BasePort = EtcdProcessBasePort
+		cfg.BasePort = getNextBasePort()
 	}
 	if cfg.ServerConfig.SnapshotCount == 0 {
 		cfg.ServerConfig.SnapshotCount = etcdserver.DefaultSnapshotCount
@@ -538,14 +555,14 @@ func (cfg *EtcdProcessClusterConfig) EtcdServerProcessConfig(tb testing.TB, i in
 		curls = []string{curl}
 	}
 
-	peerListenURL := url.URL{Scheme: cfg.PeerScheme(), Host: fmt.Sprintf("localhost:%d", peerPort)}
-	peerAdvertiseURL := url.URL{Scheme: cfg.PeerScheme(), Host: fmt.Sprintf("localhost:%d", peerPort)}
+	peerListenURL := url.URL{Scheme: cfg.PeerScheme(), Host: fmt.Sprintf("127.0.0.1:%d", peerPort)}
+	peerAdvertiseURL := url.URL{Scheme: cfg.PeerScheme(), Host: fmt.Sprintf("127.0.0.1:%d", peerPort)}
 	var proxyCfg *proxy.ServerConfig
 	if cfg.PeerProxy {
 		if !cfg.IsPeerTLS {
 			panic("Can't use peer proxy without peer TLS as it can result in malformed packets")
 		}
-		peerAdvertiseURL.Host = fmt.Sprintf("localhost:%d", peer2Port)
+		peerAdvertiseURL.Host = fmt.Sprintf("127.0.0.1:%d", peer2Port)
 		proxyCfg = &proxy.ServerConfig{
 			Logger: zap.NewNop(),
 			To:     peerListenURL,
@@ -607,7 +624,7 @@ func (cfg *EtcdProcessClusterConfig) EtcdServerProcessConfig(tb testing.TB, i in
 	if cfg.MetricsURLScheme != "" {
 		murl = (&url.URL{
 			Scheme: cfg.MetricsURLScheme,
-			Host:   fmt.Sprintf("localhost:%d", metricsPort),
+			Host:   fmt.Sprintf("127.0.0.1:%d", metricsPort),
 		}).String()
 		args = append(args, "--listen-metrics-urls="+murl)
 	}
@@ -729,7 +746,7 @@ func values(cfg embed.Config) map[string]string {
 }
 
 func clientURL(scheme string, port int, connType ClientConnType) string {
-	curlHost := fmt.Sprintf("localhost:%d", port)
+	curlHost := fmt.Sprintf("127.0.0.1:%d", port)
 	switch connType {
 	case ClientNonTLS:
 		return (&url.URL{Scheme: scheme, Host: curlHost}).String()

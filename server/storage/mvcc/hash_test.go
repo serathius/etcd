@@ -114,13 +114,13 @@ func TestHashByRevValueLastRevision(t *testing.T) {
 	}, got)
 }
 
-func putKVs(s *store, rev, count int64) {
+func putKVs(s *bboltStore, rev, count int64) {
 	for i := rev; i <= rev+count; i++ {
 		s.Put([]byte(testutil.PickKey(i)), []byte(fmt.Sprint(i)), 0)
 	}
 }
 
-func testHashByRev(t *testing.T, s *store, rev int64) KeyValueHash {
+func testHashByRev(t *testing.T, s *bboltStore, rev int64) KeyValueHash {
 	if rev == 0 {
 		rev = s.Rev()
 	}
@@ -142,30 +142,30 @@ func TestCompactionHash(t *testing.T) {
 }
 
 type hashTestCase struct {
-	*store
+	*bboltStore
 }
 
 func (tc hashTestCase) Put(ctx context.Context, key, value string) error {
-	tc.store.Put([]byte(key), []byte(value), 0)
+	tc.bboltStore.Put([]byte(key), []byte(value), 0)
 	return nil
 }
 
 func (tc hashTestCase) Delete(ctx context.Context, key string) error {
-	tc.store.DeleteRange([]byte(key), nil)
+	tc.bboltStore.DeleteRange([]byte(key), nil)
 	return nil
 }
 
 func (tc hashTestCase) HashByRev(ctx context.Context, rev int64) (testutil.KeyValueHash, error) {
-	hash, _, err := tc.store.HashStorage().HashByRev(rev)
+	hash, _, err := tc.bboltStore.HashStorage().HashByRev(rev)
 	return testutil.KeyValueHash{Hash: hash.Hash, CompactRevision: hash.CompactRevision, Revision: hash.Revision}, err
 }
 
 func (tc hashTestCase) Defrag(ctx context.Context) error {
-	return tc.store.b.Defrag()
+	return tc.bboltStore.b.Defrag()
 }
 
 func (tc hashTestCase) Compact(ctx context.Context, rev int64) error {
-	done, err := tc.store.Compact(traceutil.TODO(), rev)
+	done, err := tc.bboltStore.Compact(traceutil.TODO(), rev)
 	if err != nil {
 		return err
 	}

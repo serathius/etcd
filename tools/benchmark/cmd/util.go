@@ -21,7 +21,6 @@ import (
 	"strings"
 
 	"github.com/bgentry/speakeasy"
-	"google.golang.org/grpc/grpclog"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/pkg/v3/report"
@@ -77,7 +76,7 @@ func mustCreateConn() *clientv3.Client {
 	}
 
 	client, err := clientv3.New(cfg)
-	grpclog.SetLoggerV2(grpclog.NewLoggerV2(os.Stderr, os.Stderr, os.Stderr))
+	// grpclog.SetLoggerV2(grpclog.NewLoggerV2(os.Stderr, os.Stderr, os.Stderr))
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dial error: %v\n", err)

@@ -504,7 +504,7 @@ func TestRestoreContinueUnfinishedCompaction(t *testing.T) {
 			UnsafeSetScheduledCompact(tx, 2)
 			tx.Unlock()
 
-			var s *store
+			var s *bboltStore
 			switch test {
 			case "recreate":
 				s0.Close()
@@ -913,12 +913,12 @@ func newTestBucketKeyBytes(rev BucketKey) []byte {
 	return BucketKeyToBytes(rev, bytes)
 }
 
-func newFakeStore(lg *zap.Logger) *store {
+func newFakeStore(lg *zap.Logger) *bboltStore {
 	b := &fakeBackend{&fakeBatchTx{
 		Recorder:   &testutil.RecorderBuffered{},
 		rangeRespc: make(chan rangeResp, 5),
 	}}
-	s := &store{
+	s := &bboltStore{
 		cfg: StoreConfig{
 			CompactionBatchLimit:    10000,
 			CompactionSleepInterval: defaultCompactionSleepInterval,

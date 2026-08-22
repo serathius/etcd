@@ -135,7 +135,7 @@ func (f goPanicFailpoint) Inject(ctx context.Context, t *testing.T, lg *zap.Logg
 			return reports, err
 		}
 	}
-
+	time.Sleep(200 * time.Millisecond)
 	return reports, member.Start(ctx)
 }
 
@@ -153,6 +153,12 @@ func (f goPanicFailpoint) pickMember(t *testing.T, clus *e2e.EtcdProcessCluster)
 }
 
 func (f goPanicFailpoint) Available(config e2e.EtcdProcessClusterConfig, member e2e.EtcdProcess, profile traffic.Profile) bool {
+	if config.ServerConfig.StorageEngine == "pebble" {
+		switch f.failpoint {
+		case "defragBeforeCopy", "defragBeforeRename", "beforeWritebackBuf", "afterWritebackBuf", "beforeStartDBTxn", "afterStartDBTxn", "commitBeforePreCommitHook", "commitAfterPreCommitHook":
+			return false
+		}
+	}
 	if f.target == Follower && config.ClusterSize == 1 {
 		return false
 	}

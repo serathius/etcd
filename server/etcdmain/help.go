@@ -81,6 +81,8 @@ Member:
     Sets the maximum size (in bytes) that the etcd backend database may consume. Exceeding this triggers an alarm and puts etcd in read-only mode. Set to 0 to use the default 2GiB limit.
   --backend-bbolt-freelist-type 'map'
     BackendFreelistType specifies the type of freelist that boltdb backend uses(array and map are supported types).
+  --storage 'bbolt'
+    Storage engine type: 'bbolt' (default) or 'pebble'.
   --backend-batch-interval ''
     BackendBatchInterval is the maximum time before commit the backend transaction.
   --backend-batch-limit '0'

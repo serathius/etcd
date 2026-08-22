@@ -50,7 +50,7 @@ type StoreConfig struct {
 	CompactionSleepInterval time.Duration
 }
 
-type store struct {
+type bboltStore struct {
 	ReadView
 	WriteView
 
@@ -84,7 +84,7 @@ type store struct {
 // NewStore returns a new store. It is useful to create a store inside
 // mvcc pkg. It should only be used for testing externally.
 // revive:disable-next-line:unexported-return this is used internally in the mvcc pkg
-func NewStore(lg *zap.Logger, b backend.Backend, le lease.Lessor, cfg StoreConfig) *store {
+func NewStore(lg *zap.Logger, b backend.Backend, le lease.Lessor, cfg StoreConfig) *bboltStore {
 	if lg == nil {
 		lg = zap.NewNop()
 	}
@@ -94,7 +94,7 @@ func NewStore(lg *zap.Logger, b backend.Backend, le lease.Lessor, cfg StoreConfi
 	if cfg.CompactionSleepInterval == 0 {
 		cfg.CompactionSleepInterval = defaultCompactionSleepInterval
 	}
-	s := &store{
+	s := &bboltStore{
 		cfg:     cfg,
 		b:       b,
 		kvindex: newTreeIndex(lg),
@@ -134,7 +134,7 @@ func NewStore(lg *zap.Logger, b backend.Backend, le lease.Lessor, cfg StoreConfi
 	return s
 }
 
-func (s *store) compactBarrier(ctx context.Context, ch chan struct{}) {
+func (s *bboltStore) compactBarrier(ctx context.Context, ch chan struct{}) {
 	if ctx == nil || ctx.Err() != nil {
 		select {
 		case <-s.stopc:
@@ -153,7 +153,7 @@ func (s *store) compactBarrier(ctx context.Context, ch chan struct{}) {
 	close(ch)
 }
 
-func (s *store) hash() (hash uint32, revision int64, err error) {
+func (s *bboltStore) hash() (hash uint32, revision int64, err error) {
 	// TODO: hash and revision could be inconsistent, one possible fix is to add s.revMu.RLock() at the beginning of function, which is costly
 	start := time.Now()
 
@@ -164,7 +164,7 @@ func (s *store) hash() (hash uint32, revision int64, err error) {
 	return h, s.currentRev, err
 }
 
-func (s *store) hashByRev(rev int64) (hash KeyValueHash, currentRev int64, err error) {
+func (s *bboltStore) hashByRev(rev int64) (hash KeyValueHash, currentRev int64, err error) {
 	var compactRev int64
 	start := time.Now()
 
@@ -194,7 +194,7 @@ func (s *store) hashByRev(rev int64) (hash KeyValueHash, currentRev int64, err e
 	return hash, currentRev, err
 }
 
-func (s *store) updateCompactRev(rev int64) (<-chan struct{}, int64, error) {
+func (s *bboltStore) updateCompactRev(rev int64) (<-chan struct{}, int64, error) {
 	s.revMu.Lock()
 	if rev <= s.compactMainRev {
 		ch := make(chan struct{})
@@ -222,7 +222,7 @@ func (s *store) updateCompactRev(rev int64) (<-chan struct{}, int64, error) {
 }
 
 // checkPrevCompactionCompleted checks whether the previous scheduled compaction is completed.
-func (s *store) checkPrevCompactionCompleted() bool {
+func (s *bboltStore) checkPrevCompactionCompleted() bool {
 	tx := s.b.ReadTx()
 	tx.RLock()
 	defer tx.RUnlock()
@@ -231,7 +231,7 @@ func (s *store) checkPrevCompactionCompleted() bool {
 	return scheduledCompact == finishedCompact && scheduledCompactFound == finishedCompactFound
 }
 
-func (s *store) compact(trace *traceutil.Trace, rev, prevCompactRev int64, prevCompactionCompleted bool) <-chan struct{} {
+func (s *bboltStore) compact(trace *traceutil.Trace, rev, prevCompactRev int64, prevCompactionCompleted bool) <-chan struct{} {
 	ch := make(chan struct{})
 	j := schedule.NewJob("kvstore_compact", func(ctx context.Context) {
 		if ctx.Err() != nil {
@@ -259,7 +259,7 @@ func (s *store) compact(trace *traceutil.Trace, rev, prevCompactRev int64, prevC
 	return ch
 }
 
-func (s *store) compactLockfree(rev int64) (<-chan struct{}, error) {
+func (s *bboltStore) compactLockfree(rev int64) (<-chan struct{}, error) {
 	prevCompactionCompleted := s.checkPrevCompactionCompleted()
 	ch, prevCompactRev, err := s.updateCompactRev(rev)
 	if err != nil {
@@ -269,7 +269,7 @@ func (s *store) compactLockfree(rev int64) (<-chan struct{}, error) {
 	return s.compact(traceutil.TODO(), rev, prevCompactRev, prevCompactionCompleted), nil
 }
 
-func (s *store) Compact(trace *traceutil.Trace, rev int64) (<-chan struct{}, error) {
+func (s *bboltStore) Compact(trace *traceutil.Trace, rev int64) (<-chan struct{}, error) {
 	s.mu.Lock()
 	prevCompactionCompleted := s.checkPrevCompactionCompleted()
 	ch, prevCompactRev, err := s.updateCompactRev(rev)
@@ -283,13 +283,13 @@ func (s *store) Compact(trace *traceutil.Trace, rev int64) (<-chan struct{}, err
 	return s.compact(trace, rev, prevCompactRev, prevCompactionCompleted), nil
 }
 
-func (s *store) Commit() {
+func (s *bboltStore) Commit() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.b.ForceCommit()
 }
 
-func (s *store) Restore(b backend.Backend) error {
+func (s *bboltStore) Restore(b backend.Backend) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -314,7 +314,7 @@ func (s *store) Restore(b backend.Backend) error {
 }
 
 //nolint:unparam
-func (s *store) restore() error {
+func (s *bboltStore) restore() error {
 	s.setupMetricsReporter()
 
 	min, max := NewRevBytes(), NewRevBytes()
@@ -512,13 +512,17 @@ func restoreChunk(lg *zap.Logger, kvc chan<- revKeyValue, keys, vals [][]byte, k
 	}
 }
 
-func (s *store) Close() error {
+func (s *bboltStore) Close() error {
 	close(s.stopc)
 	s.fifoSched.Stop()
 	return nil
 }
 
-func (s *store) setupMetricsReporter() {
+func (s *bboltStore) Defrag() error {
+	return s.b.Defrag()
+}
+
+func (s *bboltStore) setupMetricsReporter() {
 	b := s.b
 	reportDbTotalSizeInBytesMu.Lock()
 	reportDbTotalSizeInBytes = func() float64 { return float64(b.Size()) }
@@ -545,6 +549,6 @@ func (s *store) setupMetricsReporter() {
 	reportCompactRevMu.Unlock()
 }
 
-func (s *store) HashStorage() HashStorage {
+func (s *bboltStore) HashStorage() HashStorage {
 	return s.hashes
 }

@@ -33,6 +33,8 @@ import (
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/pkg/v3/traceutil"
 	"go.etcd.io/etcd/server/v3/lease"
+	"go.etcd.io/etcd/server/v3/storage/backend"
+	"go.etcd.io/etcd/server/v3/storage/schema"
 )
 
 type StorageOpType int
@@ -45,6 +47,13 @@ const (
 	OpDeleteRange
 	OpCompact
 	OpTxn
+	OpBackendPut
+	OpBackendDelete
+	OpBackendRange
+	OpBackendForEach
+	OpBackendHash
+	OpCrossLayerTxn
+	OpDefrag
 )
 
 type TxnSubOpType int
@@ -62,27 +71,36 @@ type TxnSubOp struct {
 }
 
 type StorageRequest struct {
-	Op        StorageOpType
-	Key       []byte
-	End       []byte
-	Value     []byte
-	Rev       int64
-	Limit     int64
-	CountOnly bool
-	TxnOps    []TxnSubOp
+	Op          StorageOpType
+	Bucket      string
+	Key         []byte
+	End         []byte
+	Value       []byte
+	Rev         int64
+	Limit       int64
+	CountOnly   bool
+	TxnOps      []TxnSubOp
+	BackendKeys [][]byte
+	BackendVals [][]byte
+	MetaKey     []byte
+	MetaVal     []byte
 }
 
 type StorageResponse struct {
-	KVs   []*mvccpb.KeyValue
-	Count int
-	Rev   int64
-	Err   error
+	KVs         []*mvccpb.KeyValue
+	BackendKeys [][]byte
+	BackendVals [][]byte
+	Count       int
+	Rev         int64
+	Hash        uint32
+	Err         error
 }
 
 type storageLinearState struct {
-	items      map[string]*mvccpb.KeyValue
-	compactRev int64
-	currentRev int64
+	items          map[string]*mvccpb.KeyValue
+	backendBuckets map[string]map[string][]byte
+	compactRev     int64
+	currentRev     int64
 }
 
 func matchKeyRange(k string, key, end []byte) bool {
@@ -95,11 +113,31 @@ func matchKeyRange(k string, key, end []byte) bool {
 	return k >= string(key) && k < string(end)
 }
 
+type kvPair struct {
+	k []byte
+	v []byte
+}
+
+func sortKVs(keys [][]byte, vals [][]byte) {
+	pairs := make([]kvPair, len(keys))
+	for i := range keys {
+		pairs[i] = kvPair{k: keys[i], v: vals[i]}
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		return bytes.Compare(pairs[i].k, pairs[j].k) < 0
+	})
+	for i := range pairs {
+		keys[i] = pairs[i].k
+		vals[i] = pairs[i].v
+	}
+}
+
 func (s *storageLinearState) clone() *storageLinearState {
 	n := &storageLinearState{
-		items:      make(map[string]*mvccpb.KeyValue, len(s.items)),
-		compactRev: s.compactRev,
-		currentRev: s.currentRev,
+		items:          make(map[string]*mvccpb.KeyValue, len(s.items)),
+		backendBuckets: make(map[string]map[string][]byte, len(s.backendBuckets)),
+		compactRev:     s.compactRev,
+		currentRev:     s.currentRev,
 	}
 	for k, v := range s.items {
 		n.items[k] = &mvccpb.KeyValue{
@@ -111,15 +149,22 @@ func (s *storageLinearState) clone() *storageLinearState {
 			Lease:          v.Lease,
 		}
 	}
+	for b, kvs := range s.backendBuckets {
+		n.backendBuckets[b] = make(map[string][]byte, len(kvs))
+		for k, v := range kvs {
+			n.backendBuckets[b][k] = append([]byte(nil), v...)
+		}
+	}
 	return n
 }
 
 var storagePorcupineModel = porcupine.Model{
 	Init: func() any {
 		return &storageLinearState{
-			items:      make(map[string]*mvccpb.KeyValue),
-			compactRev: 0,
-			currentRev: 1,
+			items:          make(map[string]*mvccpb.KeyValue),
+			backendBuckets: make(map[string]map[string][]byte),
+			compactRev:     0,
+			currentRev:     1,
 		}
 	},
 	Step: func(state, input, output any) (bool, any) {
@@ -128,6 +173,118 @@ var storagePorcupineModel = porcupine.Model{
 		res := output.(StorageResponse)
 
 		switch req.Op {
+		case OpBackendPut:
+			if res.Err != nil {
+				return false, state
+			}
+			nextState := st.clone()
+			if nextState.backendBuckets[req.Bucket] == nil {
+				nextState.backendBuckets[req.Bucket] = make(map[string][]byte)
+			}
+			nextState.backendBuckets[req.Bucket][string(req.Key)] = append([]byte(nil), req.Value...)
+			return true, nextState
+
+		case OpBackendDelete:
+			if res.Err != nil {
+				return false, state
+			}
+			nextState := st.clone()
+			if nextState.backendBuckets[req.Bucket] != nil {
+				delete(nextState.backendBuckets[req.Bucket], string(req.Key))
+			}
+			return true, nextState
+
+		case OpBackendRange:
+			if res.Err != nil {
+				return false, state
+			}
+			bucketKVs := st.backendBuckets[req.Bucket]
+			var expKeys [][]byte
+			var expVals [][]byte
+			for k, v := range bucketKVs {
+				if matchKeyRange(k, req.Key, req.End) {
+					expKeys = append(expKeys, []byte(k))
+					expVals = append(expVals, v)
+				}
+			}
+			sortKVs(expKeys, expVals)
+			if req.Limit > 0 && int64(len(expKeys)) > req.Limit {
+				expKeys = expKeys[:req.Limit]
+				expVals = expVals[:req.Limit]
+			}
+			if len(expKeys) != len(res.BackendKeys) {
+				return false, state
+			}
+			for i := range expKeys {
+				if !bytes.Equal(expKeys[i], res.BackendKeys[i]) || !bytes.Equal(expVals[i], res.BackendVals[i]) {
+					return false, state
+				}
+			}
+			return true, state
+
+		case OpBackendForEach:
+			if res.Err != nil {
+				return false, state
+			}
+			bucketKVs := st.backendBuckets[req.Bucket]
+			var expKeys [][]byte
+			var expVals [][]byte
+			for k, v := range bucketKVs {
+				expKeys = append(expKeys, []byte(k))
+				expVals = append(expVals, v)
+			}
+			sortKVs(expKeys, expVals)
+			resKeysCopy := append([][]byte(nil), res.BackendKeys...)
+			resValsCopy := append([][]byte(nil), res.BackendVals...)
+			sortKVs(resKeysCopy, resValsCopy)
+			if len(expKeys) != len(resKeysCopy) {
+				return false, state
+			}
+			for i := range expKeys {
+				if !bytes.Equal(expKeys[i], resKeysCopy[i]) || !bytes.Equal(expVals[i], resValsCopy[i]) {
+					return false, state
+				}
+			}
+			return true, state
+
+		case OpBackendHash:
+			if res.Err != nil {
+				return false, state
+			}
+			return true, state
+
+		case OpDefrag:
+			if res.Err != nil {
+				return false, state
+			}
+			return true, state
+
+		case OpCrossLayerTxn:
+			if res.Err != nil {
+				return false, state
+			}
+			nextState := st.clone()
+			nextState.currentRev++
+
+			var createRev int64 = nextState.currentRev
+			var ver int64 = 1
+			if existing, exists := st.items[string(req.Key)]; exists {
+				createRev = existing.CreateRevision
+				ver = existing.Version + 1
+			}
+
+			nextState.items[string(req.Key)] = &mvccpb.KeyValue{
+				Key:            append([]byte(nil), req.Key...),
+				Value:          append([]byte(nil), req.Value...),
+				CreateRevision: createRev,
+				ModRevision:    nextState.currentRev,
+				Version:        ver,
+			}
+			if nextState.backendBuckets[req.Bucket] == nil {
+				nextState.backendBuckets[req.Bucket] = make(map[string][]byte)
+			}
+			nextState.backendBuckets[req.Bucket][string(req.MetaKey)] = append([]byte(nil), req.MetaVal...)
+			return true, nextState
 		case OpPut:
 			if res.Err != nil {
 				return false, state
@@ -369,7 +526,7 @@ var storagePorcupineModel = porcupine.Model{
 		if st1.compactRev != st2.compactRev || st1.currentRev != st2.currentRev {
 			return false
 		}
-		if len(st1.items) != len(st2.items) {
+		if len(st1.items) != len(st2.items) || len(st1.backendBuckets) != len(st2.backendBuckets) {
 			return false
 		}
 		for k, v1 := range st1.items {
@@ -382,6 +539,26 @@ var storagePorcupineModel = porcupine.Model{
 				return false
 			}
 		}
+		allBuckets := make(map[string]struct{})
+		for bk := range st1.backendBuckets {
+			allBuckets[bk] = struct{}{}
+		}
+		for bk := range st2.backendBuckets {
+			allBuckets[bk] = struct{}{}
+		}
+		for bk := range allBuckets {
+			bmap1 := st1.backendBuckets[bk]
+			bmap2 := st2.backendBuckets[bk]
+			if len(bmap1) != len(bmap2) {
+				return false
+			}
+			for k, v1 := range bmap1 {
+				v2, ok := bmap2[k]
+				if !ok || !bytes.Equal(v1, v2) {
+					return false
+				}
+			}
+		}
 		return true
 	},
 	DescribeOperation: func(input, output any) string {
@@ -392,6 +569,31 @@ var storagePorcupineModel = porcupine.Model{
 			revSuffix = fmt.Sprintf(" [rev=%d]", req.Rev)
 		}
 		switch req.Op {
+		case OpBackendPut:
+			return fmt.Sprintf("BackendPut(%s, %q, %q)", req.Bucket, string(req.Key), string(req.Value))
+		case OpBackendDelete:
+			return fmt.Sprintf("BackendDelete(%s, %q)", req.Bucket, string(req.Key))
+		case OpBackendRange:
+			var pairs []string
+			for i := range res.BackendKeys {
+				pairs = append(pairs, fmt.Sprintf("%q:%q", string(res.BackendKeys[i]), string(res.BackendVals[i])))
+			}
+			return fmt.Sprintf("BackendRange(%s, %q) -> [%s]", req.Bucket, string(req.Key), strings.Join(pairs, ", "))
+		case OpBackendForEach:
+			var pairs []string
+			for i := range res.BackendKeys {
+				pairs = append(pairs, fmt.Sprintf("%q:%q", string(res.BackendKeys[i]), string(res.BackendVals[i])))
+			}
+			return fmt.Sprintf("BackendForEach(%s) -> [%s]", req.Bucket, strings.Join(pairs, ", "))
+		case OpBackendHash:
+			return fmt.Sprintf("BackendHash() -> hash:%d", res.Hash)
+		case OpDefrag:
+			if res.Err != nil {
+				return fmt.Sprintf("Defrag() -> err:%v", res.Err)
+			}
+			return "Defrag() -> ok"
+		case OpCrossLayerTxn:
+			return fmt.Sprintf("CrossLayerTxn(MVCC.Put(%q,%q), Meta.Put(%q,%q))", string(req.Key), string(req.Value), string(req.MetaKey), string(req.MetaVal))
 		case OpPut:
 			return fmt.Sprintf("Put(%q, %q)", string(req.Key), string(req.Value))
 		case OpDelete:
@@ -474,7 +676,7 @@ func TestStorageCorrectness(t *testing.T) {
 			bs, err := driver.Setup(dir)
 			require.NoError(t, err)
 			defer bs.Close()
-			testStorageCorrectness(t, bs.store)
+			testStorageCorrectness(t, bs)
 		})
 	}
 }
@@ -510,20 +712,35 @@ const (
 	clientTxn
 	clientCompact
 	clientReadTxn
+	clientBackendPut
+	clientBackendDelete
+	clientBackendRange
+	clientBackendForEach
+	clientBackendHash
+	clientCrossLayerTxn
+	clientDefrag
 )
 
 var defaultOpChoices = []choiceWeight[clientOpType]{
-	{choice: clientPut, weight: 25},
-	{choice: clientGet, weight: 15},
-	{choice: clientRange, weight: 15},
-	{choice: clientDelete, weight: 10},
-	{choice: clientDeleteRange, weight: 10},
-	{choice: clientTxn, weight: 10},
-	{choice: clientCompact, weight: 10},
-	{choice: clientReadTxn, weight: 10},
+	{choice: clientPut, weight: 15},
+	{choice: clientGet, weight: 10},
+	{choice: clientRange, weight: 10},
+	{choice: clientDelete, weight: 8},
+	{choice: clientDeleteRange, weight: 8},
+	{choice: clientTxn, weight: 8},
+	{choice: clientCompact, weight: 8},
+	{choice: clientReadTxn, weight: 8},
+	{choice: clientBackendPut, weight: 8},
+	{choice: clientBackendDelete, weight: 5},
+	{choice: clientBackendRange, weight: 8},
+	{choice: clientBackendForEach, weight: 0},
+	{choice: clientBackendHash, weight: 5},
+	{choice: clientCrossLayerTxn, weight: 10},
+	{choice: clientDefrag, weight: 3},
 }
 
-func testStorageCorrectness(t *testing.T, store WatchableKV) {
+func testStorageCorrectness(t *testing.T, s *storage) {
+	store := s.store
 	const numClients = 6
 	const testDuration = 2 * time.Second
 	keys := [][]byte{
@@ -532,6 +749,13 @@ func testStorageCorrectness(t *testing.T, store WatchableKV) {
 		[]byte("key-2"),
 		[]byte("key-3"),
 		[]byte("key-4"),
+	}
+	backendBuckets := []backend.Bucket{schema.Meta, schema.Lease, schema.Auth}
+	backendKeys := [][]byte{
+		[]byte("bkey-0"),
+		[]byte("bkey-1"),
+		[]byte("bkey-2"),
+		[]byte("bkey-3"),
 	}
 
 	var ops []porcupine.Operation
@@ -789,6 +1013,112 @@ func testStorageCorrectness(t *testing.T, store WatchableKV) {
 							require.LessOrEqual(t, kv.ModRevision, snapRev, "Read transaction must not observe mutations newer than its snapshot revision")
 						}
 					}
+				case clientBackendPut:
+					if s.backend == nil {
+						continue
+					}
+					bk := backendBuckets[r.Intn(len(backendBuckets))]
+					bkKey := backendKeys[r.Intn(len(backendKeys))]
+					v := []byte(fmt.Sprintf("bval-%d-c%d", atomic.AddInt64(&valCounter, 1), cid))
+					req = StorageRequest{Op: OpBackendPut, Bucket: string(bk.Name()), Key: bkKey, Value: v}
+					tx := s.backend.BatchTx()
+					tx.LockInsideApply()
+					tx.UnsafePut(bk, bkKey, v)
+					tx.Unlock()
+
+				case clientBackendDelete:
+					if s.backend == nil {
+						continue
+					}
+					bk := backendBuckets[r.Intn(len(backendBuckets))]
+					bkKey := backendKeys[r.Intn(len(backendKeys))]
+					req = StorageRequest{Op: OpBackendDelete, Bucket: string(bk.Name()), Key: bkKey}
+					tx := s.backend.BatchTx()
+					tx.LockInsideApply()
+					tx.UnsafeDelete(bk, bkKey)
+					tx.Unlock()
+
+				case clientBackendRange:
+					if s.backend == nil {
+						continue
+					}
+					bk := backendBuckets[r.Intn(len(backendBuckets))]
+					bkKey := backendKeys[r.Intn(len(backendKeys))]
+					req = StorageRequest{Op: OpBackendRange, Bucket: string(bk.Name()), Key: bkKey}
+					rtx := s.backend.ConcurrentReadTx()
+					rtx.RLock()
+					resKeys, resVals := rtx.UnsafeRange(bk, bkKey, nil, 1)
+					rtx.RUnlock()
+					if len(resKeys) > 0 {
+						res.BackendKeys = make([][]byte, len(resKeys))
+						res.BackendVals = make([][]byte, len(resVals))
+						for i := range resKeys {
+							res.BackendKeys[i] = append([]byte(nil), resKeys[i]...)
+							res.BackendVals[i] = append([]byte(nil), resVals[i]...)
+						}
+					}
+
+				case clientBackendForEach:
+					if s.backend == nil {
+						continue
+					}
+					bk := backendBuckets[r.Intn(len(backendBuckets))]
+					req = StorageRequest{Op: OpBackendForEach, Bucket: string(bk.Name())}
+					rtx := s.backend.ConcurrentReadTx()
+					rtx.RLock()
+					resMap := make(map[string][]byte)
+					err := rtx.UnsafeForEach(bk, func(k, v []byte) error {
+						resMap[string(k)] = append([]byte(nil), v...)
+						return nil
+					})
+					rtx.RUnlock()
+					res.Err = err
+					for k, v := range resMap {
+						res.BackendKeys = append(res.BackendKeys, []byte(k))
+						res.BackendVals = append(res.BackendVals, v)
+					}
+
+				case clientBackendHash:
+					if s.backend == nil {
+						continue
+					}
+					req = StorageRequest{Op: OpBackendHash}
+					h, err := s.backend.Hash(nil)
+					res.Hash = h
+					res.Err = err
+
+				case clientCrossLayerTxn:
+					if s.backend == nil {
+						continue
+					}
+					mvccKey := keys[r.Intn(len(keys))]
+					mvccVal := []byte(fmt.Sprintf("v%d-c%d-cross", atomic.AddInt64(&valCounter, 1), cid))
+					metaKey := []byte("consistent_index")
+
+					tw := store.Write(traceutil.TODO())
+					rev := tw.Put(mvccKey, mvccVal, lease.NoLease)
+					metaVal := []byte(fmt.Sprintf("%016x", rev))
+					s.backend.BatchTx().UnsafePut(schema.Meta, metaKey, metaVal)
+					tw.End()
+
+					req = StorageRequest{
+						Op:      OpCrossLayerTxn,
+						Bucket:  string(schema.Meta.Name()),
+						Key:     mvccKey,
+						Value:   mvccVal,
+						MetaKey: metaKey,
+						MetaVal: metaVal,
+					}
+					res.Rev = rev
+					if rev > atomic.LoadInt64(&maxCommittedRev) {
+						atomic.StoreInt64(&maxCommittedRev, rev)
+					}
+				case clientDefrag:
+					req = StorageRequest{
+						Op: OpDefrag,
+					}
+					err := s.Defrag()
+					res.Err = err
 				default:
 					panic("unknown client op")
 				}
@@ -846,11 +1176,59 @@ func testStorageCorrectness(t *testing.T, store WatchableKV) {
 		}
 	}()
 
+	var maintWg sync.WaitGroup
+	maintStop := make(chan struct{})
+
+	if s.backend != nil {
+		// 1. Concurrent Snapshot streaming in background
+		maintWg.Add(1)
+		go func() {
+			defer maintWg.Done()
+			ticker := time.NewTicker(200 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-maintStop:
+					return
+				case <-ticker.C:
+					snap := s.backend.Snapshot()
+					if snap == nil {
+						continue
+					}
+					var buf bytes.Buffer
+					_, err := snap.WriteTo(&buf)
+					_ = snap.Close()
+					if err != nil {
+						t.Errorf("Concurrent snapshot WriteTo failed: %v", err)
+					}
+				}
+			}
+		}()
+
+		// 2. Concurrent ForceCommit in background
+		maintWg.Add(1)
+		go func() {
+			defer maintWg.Done()
+			ticker := time.NewTicker(100 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-maintStop:
+					return
+				case <-ticker.C:
+					s.backend.ForceCommit()
+				}
+			}
+		}()
+	}
+
 	startTime = time.Now()
 	stopTime = startTime.Add(testDuration)
 	close(startGate)
 
 	wg.Wait()
+	close(maintStop)
+	maintWg.Wait()
 	close(watchDone)
 	watchWg.Wait()
 
@@ -910,7 +1288,7 @@ func newStorageReplay(operations []porcupine.Operation) *StorageReplay {
 			continue
 		}
 		switch req.Op {
-		case OpPut, OpDelete, OpDeleteRange, OpTxn:
+		case OpPut, OpDelete, OpDeleteRange, OpTxn, OpCrossLayerTxn:
 			if res.Rev > 0 {
 				writes = append(writes, writeOp{
 					rev: res.Rev,
@@ -948,7 +1326,7 @@ func newStorageReplay(operations []porcupine.Operation) *StorageReplay {
 		}
 
 		switch w.req.Op {
-		case OpPut:
+		case OpPut, OpCrossLayerTxn:
 			var createRev int64 = w.rev
 			var ver int64 = 1
 			if existing, ok := currentState[string(w.req.Key)]; ok {

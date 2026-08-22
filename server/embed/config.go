@@ -222,6 +222,7 @@ type Config struct {
 	BackendBatchLimit int `json:"backend-batch-limit"`
 	// BackendFreelistType specifies the type of freelist that boltdb backend uses (array and map are supported types).
 	BackendFreelistType string `json:"backend-bbolt-freelist-type"`
+	StorageEngine       string `json:"storage"`
 	QuotaBackendBytes   int64  `json:"quota-backend-bytes"`
 	MaxTxnOps           uint   `json:"max-txn-ops"`
 	MaxRequestBytes     uint   `json:"max-request-bytes"`
@@ -495,7 +496,8 @@ func NewConfig() *Config {
 	lcurl, _ := url.Parse(DefaultListenClientURLs)
 	acurl, _ := url.Parse(DefaultAdvertiseClientURLs)
 	cfg := &Config{
-		MaxWalFiles: DefaultMaxWALs,
+		MaxWalFiles:   DefaultMaxWALs,
+		StorageEngine: "pebble",
 
 		Name: DefaultName,
 
@@ -615,6 +617,7 @@ func (cfg *Config) AddFlags(fs *flag.FlagSet) {
 	fs.BoolVar(&cfg.InitialElectionTickAdvance, "initial-election-tick-advance", cfg.InitialElectionTickAdvance, "Whether to fast-forward initial election ticks on boot for faster election.")
 	fs.Int64Var(&cfg.QuotaBackendBytes, "quota-backend-bytes", cfg.QuotaBackendBytes, "Sets the maximum size (in bytes) that the etcd backend database may consume. Exceeding this triggers an alarm and puts etcd in read-only mode. Set to 0 to use the default 2GiB limit.")
 	fs.StringVar(&cfg.BackendFreelistType, "backend-bbolt-freelist-type", cfg.BackendFreelistType, "BackendFreelistType specifies the type of freelist that boltdb backend uses(array and map are supported types)")
+	fs.StringVar(&cfg.StorageEngine, "storage", cfg.StorageEngine, "Storage engine type: 'bbolt' (default) or 'pebble'")
 	fs.DurationVar(&cfg.BackendBatchInterval, "backend-batch-interval", cfg.BackendBatchInterval, "BackendBatchInterval is the maximum time before commit the backend transaction.")
 	fs.IntVar(&cfg.BackendBatchLimit, "backend-batch-limit", cfg.BackendBatchLimit, "BackendBatchLimit is the maximum operations before commit the backend transaction.")
 	fs.UintVar(&cfg.MaxTxnOps, "max-txn-ops", cfg.MaxTxnOps, "Maximum number of operations permitted in a transaction.")

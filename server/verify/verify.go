@@ -40,6 +40,9 @@ type Config struct {
 	// is expected to be exact.
 	ExactIndex bool
 
+	// StorageEngine specifies the backend storage engine ("bbolt" or "pebble").
+	StorageEngine string
+
 	Logger *zap.Logger
 }
 
@@ -54,9 +57,19 @@ func Verify(cfg Config) (retErr error) {
 		lg = zap.NewNop()
 	}
 
-	if !fileutil.Exist(datadir.ToBackendFileName(cfg.DataDir)) {
-		lg.Info("verification skipped due to non exist db file")
-		return nil
+	dbPath := datadir.ToBackendFileName(cfg.DataDir)
+	if cfg.StorageEngine == "pebble" {
+		if !fileutil.Exist(dbPath) && !fileutil.Exist(dbPath+".pebble") {
+			lg.Info("verification skipped due to non exist db file")
+			return nil
+		}
+	} else if !fileutil.Exist(dbPath) {
+		if fileutil.Exist(dbPath + ".pebble") {
+			cfg.StorageEngine = "pebble"
+		} else {
+			lg.Info("verification skipped due to non exist db file")
+			return nil
+		}
 	}
 
 	lg.Info("verification of persisted state", zap.String("data-dir", cfg.DataDir))
@@ -74,7 +87,18 @@ func Verify(cfg Config) (retErr error) {
 		}
 	}()
 
-	be := backend.NewDefaultBackend(lg, datadir.ToBackendFileName(cfg.DataDir))
+	var be backend.Backend
+	if cfg.StorageEngine == "pebble" {
+		bcfg := backend.DefaultBackendConfig(lg)
+		bcfg.Path = dbPath
+		var err error
+		be, err = backend.NewPebbleBackend(bcfg)
+		if err != nil {
+			return fmt.Errorf("failed to open pebble backend: %w", err)
+		}
+	} else {
+		be = backend.NewDefaultBackend(lg, dbPath)
+	}
 	defer be.Close()
 
 	snapshot, hardstate, err := validateWAL(cfg)

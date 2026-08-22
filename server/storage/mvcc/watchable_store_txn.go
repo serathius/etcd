@@ -52,5 +52,5 @@ type watchableStoreTxnWrite struct {
 }
 
 func (s *watchableStore) Write(trace *traceutil.Trace) TxnWrite {
-	return &watchableStoreTxnWrite{s.store.Write(trace), s}
+	return &watchableStoreTxnWrite{s.bboltStore.Write(trace), s}
 }

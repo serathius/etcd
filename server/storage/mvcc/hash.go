@@ -119,13 +119,13 @@ type HashStorage interface {
 }
 
 type hashStorage struct {
-	store  *store
+	store  *bboltStore
 	hashMu sync.RWMutex
 	hashes []KeyValueHash
 	lg     *zap.Logger
 }
 
-func NewHashStorage(lg *zap.Logger, s *store) HashStorage {
+func NewHashStorage(lg *zap.Logger, s *bboltStore) HashStorage {
 	return &hashStorage{
 		store: s,
 		lg:    lg,

@@ -166,7 +166,30 @@ func DefaultBackendConfig(lg *zap.Logger) BackendConfig {
 	}
 }
 
+func isPebblePath(path string) bool {
+	if path == "" {
+		return false
+	}
+	if fi, err := os.Stat(pebbleDir(path)); err == nil && fi.IsDir() {
+		return true
+	}
+	if fi, err := os.Stat(path); err == nil && fi.IsDir() {
+		return true
+	}
+	return false
+}
+
 func New(bcfg BackendConfig) Backend {
+	if isPebblePath(bcfg.Path) {
+		be, err := NewPebbleBackend(bcfg)
+		if err != nil {
+			if bcfg.Logger != nil {
+				bcfg.Logger.Panic("failed to open pebble database", zap.String("path", bcfg.Path), zap.Error(err))
+			}
+			panic(err)
+		}
+		return be
+	}
 	return newBackend(bcfg)
 }
 
@@ -187,6 +210,17 @@ func NewDefaultBackend(lg *zap.Logger, path string, opts ...BackendConfigOption)
 	bcfg.Path = path
 	for _, opt := range opts {
 		opt(&bcfg)
+	}
+
+	if isPebblePath(path) {
+		be, err := NewPebbleBackend(bcfg)
+		if err != nil {
+			if bcfg.Logger != nil {
+				bcfg.Logger.Panic("failed to open pebble database", zap.String("path", bcfg.Path), zap.Error(err))
+			}
+			panic(err)
+		}
+		return be
 	}
 
 	return newBackend(bcfg)

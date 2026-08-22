@@ -177,18 +177,17 @@ func (ms *maintenanceServer) Snapshot(sr *pb.SnapshotRequest, srv pb.Maintenance
 		if err != nil && !errorspkg.Is(err, io.EOF) && !errorspkg.Is(err, io.ErrUnexpectedEOF) {
 			return togRPCError(err)
 		}
+		if n == 0 {
+			break
+		}
 		sent += int64(n)
 
-		// if total is x * snapshotSendBufferSize. it is possible that
-		// resp.RemainingBytes == 0
-		// resp.Blob == zero byte but not nil
-		// does this make server response sent to client nil in proto
-		// and client stops receiving from snapshot stream before
-		// server sends snapshot SHA?
-		// No, the client will still receive non-nil response
-		// until server closes the stream with EOF
+		remBytes := uint64(0)
+		if total > sent {
+			remBytes = uint64(total - sent)
+		}
 		resp := &pb.SnapshotResponse{
-			RemainingBytes: uint64(total - sent),
+			RemainingBytes: remBytes,
 			Blob:           buf[:n],
 			Version:        storageVersion,
 		}
@@ -196,6 +195,18 @@ func (ms *maintenanceServer) Snapshot(sr *pb.SnapshotRequest, srv pb.Maintenance
 			return togRPCError(err)
 		}
 		h.Write(buf[:n])
+		if errorspkg.Is(err, io.EOF) || errorspkg.Is(err, io.ErrUnexpectedEOF) {
+			break
+		}
+	}
+
+	if pad := (512 - (sent % 512)) % 512; pad > 0 {
+		padding := make([]byte, pad)
+		if err := srv.Send(&pb.SnapshotResponse{RemainingBytes: 0, Blob: padding, Version: storageVersion}); err != nil {
+			return togRPCError(err)
+		}
+		h.Write(padding)
+		sent += pad
 	}
 
 	// send SHA digest for integrity checks

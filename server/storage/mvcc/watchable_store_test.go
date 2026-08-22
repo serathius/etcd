@@ -762,8 +762,8 @@ func TestWatchBatchUnsynced(t *testing.T) {
 			sImpl, ok := s.(*watchableStore)
 			require.Truef(t, ok, "TestWatchBatchUnsynced: needs a WatchableKV implementation")
 
-			sImpl.store.revMu.Lock()
-			defer sImpl.store.revMu.Unlock()
+			sImpl.bboltStore.revMu.Lock()
+			defer sImpl.bboltStore.revMu.Unlock()
 			assert.Equal(t, 1, sImpl.synced.size())
 			assert.Equal(t, 0, sImpl.unsynced.size())
 		})
